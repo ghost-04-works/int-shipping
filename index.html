@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-format-matched-to-original -->
+<!-- VERSION-MARKER: 2026-07-30-variant-title-order-nosku-fixed -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -394,6 +394,7 @@ let processedOrders = [];
 let processedLoaded = false;
 let currentTab = "dhl";
 let dhlReportMap = {}; // orderNumber -> { tracking, shipto, weight, freight, ct, country }
+let dhlReportOrderSequence = []; // 리포트 파일에 등장한 순서 그대로의 주문번호 목록
 let selectedDhlOrderIds = new Set();
 
 // ── 인증 ──────────────────────────────────────────────────────────
@@ -859,6 +860,7 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
 
     dhlReportMap = {};
+    dhlReportOrderSequence = [];
     // rows[0]은 헤더. 1행부터 데이터.
     // 컬럼 인덱스는 기존 PackageSentReport 포맷 기준:
     // 0 ShipTo, 1 OurRef, 5 Weight, 16 TrackingNumber, 35 Freight Charge, 40 Number of packages sent
@@ -873,6 +875,7 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
         freight: (row[35] || "").toString().trim(),
         ct: (row[40] || "1").toString().trim(),
       };
+      dhlReportOrderSequence.push(ref);
     }
 
     statusEl.textContent = `${Object.keys(dhlReportMap).length}건 매칭 데이터 로드됨`;
@@ -977,17 +980,27 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
   setTimeout(() => loadOrders(), 2000);
 });
 
+function sortByReportOrder(orders) {
+  const indexMap = new Map(dhlReportOrderSequence.map((no, idx) => [no, idx]));
+  return [...orders].sort((a, b) => {
+    const ia = indexMap.has(a.orderNumber) ? indexMap.get(a.orderNumber) : Infinity;
+    const ib = indexMap.has(b.orderNumber) ? indexMap.get(b.orderNumber) : Infinity;
+    return ia - ib;
+  });
+}
+
 // ── 출고분 / GMI 수출신고 엑셀 생성 ────────────────────────────────
 let originReviewTargets = [];
 
 document.getElementById("dhl-export-btn").addEventListener("click", async () => {
   const sourceList = currentTab === "processed" ? processedOrders : allOrders.filter((o) => classify(o) === "dhl");
-  const targets = sourceList.filter((o) => selectedDhlOrderIds.has(o.id));
+  let targets = sourceList.filter((o) => selectedDhlOrderIds.has(o.id));
   if (targets.length === 0) {
     alert("엑셀로 생성할 주문을 먼저 체크박스로 선택해주세요.");
     return;
   }
 
+  targets = sortByReportOrder(targets); // DHL 리포트에 등장한 순서 그대로 정렬
   originReviewTargets = targets;
 
   const skus = [...new Set(targets.flatMap((o) => o.lineItems.filter((li) => li.sku).map((li) => li.sku)))];
@@ -1001,23 +1014,30 @@ document.getElementById("dhl-export-btn").addEventListener("click", async () => 
   openOriginModal(targets, lookup);
 });
 
+function originKey(order, li, idx) {
+  // SKU가 있으면 SKU를 키로, 없으면 주문건별 고유 키로 대체
+  // (SKU 없는 라인도 실제 출고된 물품이므로 신고서에서 누락되면 안 됨 — 사람이 직접 원산지 입력)
+  return li.sku || `__nosku__${order.id}__${idx}`;
+}
+
 function openOriginModal(targets, lookup) {
   const tbody = document.getElementById("origin-table-body");
   const rowsHtml = [];
   for (const order of targets) {
-    for (const li of order.lineItems) {
-      if (!li.sku) continue;
-      const info = lookup[li.sku];
+    order.lineItems.forEach((li, idx) => {
+      const key = originKey(order, li, idx);
+      const info = li.sku ? lookup[li.sku] : null;
       const origin = info?.originCode || "";
+      const skuLabel = li.sku || "SKU 없음";
       rowsHtml.push(`
-        <tr class="${origin ? "" : "missing"}" data-sku="${escapeHtml(li.sku)}">
+        <tr class="${origin ? "" : "missing"}" data-key="${escapeHtml(key)}">
           <td>${escapeHtml(order.orderNumber)}</td>
           <td>${escapeHtml(li.title)}</td>
-          <td>${escapeHtml(li.sku)}</td>
-          <td><input type="text" class="origin-input" data-sku="${escapeHtml(li.sku)}" value="${escapeHtml(origin)}" maxlength="2" /></td>
+          <td>${escapeHtml(skuLabel)}</td>
+          <td><input type="text" class="origin-input" data-key="${escapeHtml(key)}" value="${escapeHtml(origin)}" maxlength="2" /></td>
         </tr>
       `);
-    }
+    });
   }
   tbody.innerHTML = rowsHtml.join("");
   document.getElementById("origin-modal-error").textContent = "";
@@ -1035,7 +1055,7 @@ document.getElementById("origin-modal-confirm").addEventListener("click", () => 
 
   document.querySelectorAll(".origin-input").forEach((input) => {
     const val = input.value.trim().toUpperCase();
-    originMap[input.dataset.sku] = val;
+    originMap[input.dataset.key] = val;
     if (!val) hasMissing = true;
   });
 
@@ -1051,23 +1071,38 @@ document.getElementById("origin-modal-confirm").addEventListener("click", () => 
 
 function exportChulgobon(orders) {
   const rows = [["오더", "송장번호", "확인", "Lineitem name", "수량", "확인"]];
+  const merges = [];
+
   for (const order of orders) {
     const match = dhlReportMap[order.orderNumber] || {};
+    const blockStartRow = rows.length; // 이 블록의 첫 데이터 행 인덱스 (0-based, 시트 행 번호와 동일)
     let first = true;
     for (const li of order.lineItems) {
       rows.push([
         first ? order.orderNumber : "",
         first ? match.tracking || "" : "",
-        "", // 확인 (수기 체크용, 항상 빈칸)
+        "",
         li.title,
         li.quantity,
-        "", // 확인 (수기 체크용, 항상 빈칸)
+        "",
       ]);
       first = false;
     }
-    rows.push(["", "", "", "", "", ""]); // 주문 블록 사이 빈 줄 (원본과 동일)
+    const blockEndRow = rows.length - 1;
+
+    // 품목이 2줄 이상인 블록만 병합 (1줄이면 병합할 필요 없음)
+    if (blockEndRow > blockStartRow) {
+      merges.push({ s: { r: blockStartRow, c: 0 }, e: { r: blockEndRow, c: 0 } }); // 오더
+      merges.push({ s: { r: blockStartRow, c: 1 }, e: { r: blockEndRow, c: 1 } }); // 송장번호
+    }
+
+    rows.push(["", "", "", "", "", ""]); // 주문 블록 사이 빈 줄
   }
+
   const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!merges"] = merges;
+  ws["!cols"] = [{ wch: 10 }, { wch: 14 }, { wch: 6 }, { wch: 45 }, { wch: 6 }, { wch: 6 }];
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "출고분");
   const today = new Date();
@@ -1087,6 +1122,7 @@ function exportGmi(orders, originMap) {
     header,
     [],
   ];
+  const merges = [{ s: { r: 0, c: 0 }, e: { r: 0, c: header.length - 1 } }]; // 제목행 전체 병합
 
   for (const order of orders) {
     const match = dhlReportMap[order.orderNumber];
@@ -1096,11 +1132,12 @@ function exportGmi(orders, originMap) {
       match.shipto ||
       [order.shippingAddress?.firstName, order.shippingAddress?.lastName].filter(Boolean).join(" ");
 
-    const itemLines = order.lineItems.filter((li) => li.sku);
+    const itemLines = order.lineItems; // SKU 없어도 실제 출고 물품이므로 전부 포함
+    const blockStartRow = rows.length;
     let blockTotal = 0;
     let firstRow = true;
 
-    for (const li of itemLines) {
+    itemLines.forEach((li, idx) => {
       const amount = (li.price || 0) * li.quantity;
       blockTotal += amount;
       rows.push([
@@ -1112,21 +1149,21 @@ function exportGmi(orders, originMap) {
         li.quantity,
         li.price || "",
         amount || "",
-        "", // 총신고금액은 블록 마지막에 채움
+        "",
         "KEYBOARD PARTS",
         "8473.30-9000",
         li.title,
         "DAP",
         "USD",
         "Y",
-        originMap[li.sku] || "",
-        "", // 송품장번호
-        15, // 거래구분 (고정값)
-        1304377108, // 사업자번호(수출자) (고정값)
-        "미상", // 사업자번호(제조자) (고정값)
+        originMap[originKey(order, li, idx)] || "",
+        "",
+        15,
+        1304377108,
+        "미상",
       ]);
       firstRow = false;
-    }
+    });
 
     if (match.freight && parseFloat(match.freight) > 0) {
       const shippingAmount = parseFloat(match.freight);
@@ -1153,14 +1190,29 @@ function exportGmi(orders, originMap) {
         1304377108,
         "미상",
       ]);
+      firstRow = false;
     }
 
-    // 총신고금액은 이 오더 블록의 첫 데이터 행에 기입 (원본은 병합+수식이었으나 여기선 단순 합산값)
-    const blockStartIdx = rows.length - itemLines.length - (match.freight && parseFloat(match.freight) > 0 ? 1 : 0);
-    if (rows[blockStartIdx]) rows[blockStartIdx][8] = blockTotal;
+    const blockEndRow = rows.length - 1;
+    rows[blockStartRow][8] = blockTotal;
+
+    // 품목+배송비가 2줄 이상인 블록만 병합
+    if (blockEndRow > blockStartRow) {
+      // AWB NO(0), 구매자(1), 목적국(2), CT(3), 총중량(4), 총신고금액(8) 은 블록 전체에 걸쳐 병합
+      for (const col of [0, 1, 2, 3, 4, 8]) {
+        merges.push({ s: { r: blockStartRow, c: col }, e: { r: blockEndRow, c: col } });
+      }
+    }
   }
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!merges"] = merges;
+  ws["!cols"] = [
+    { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 5 }, { wch: 8 }, { wch: 5 }, { wch: 8 }, { wch: 10 },
+    { wch: 10 }, { wch: 14 }, { wch: 13 }, { wch: 35 }, { wch: 7 }, { wch: 7 }, { wch: 7 }, { wch: 7 },
+    { wch: 10 }, { wch: 7 }, { wch: 13 }, { wch: 13 },
+  ];
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
   const today = new Date();
