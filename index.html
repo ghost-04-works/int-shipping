@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>해외주문 발송 처리</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --panel-2: #1d222a;
+    --border: #2a3038;
+    --text: #e6e9ee;
+    --text-dim: #8a919c;
+    --accent: #4fa3ff;
+    --dhl: #ffb020;
+    --domestic: #2ecc71;
+    --danger: #ff5d5d;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Pretendard", "Malgun Gothic", sans-serif;
+    font-size: 14px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.2px;
+  }
+  header h1 .sub {
+    color: var(--text-dim);
+    font-weight: 400;
+    margin-left: 8px;
+    font-size: 12px;
+  }
+  #login-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 80vh;
+    gap: 16px;
+  }
+  #login-screen p { color: var(--text-dim); margin: 0; }
+  main { padding: 20px 24px; display: none; }
+  main.visible { display: block; }
+
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    padding: 8px 16px;
+    cursor: pointer;
+    color: var(--text-dim);
+    border-bottom: 2px solid transparent;
+    font-size: 13px;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab .count {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: var(--panel-2);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0f1216; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+  }
+  tbody tr { border-bottom: 1px solid var(--border); }
+  tbody tr:hover { background: var(--panel); }
+  td { padding: 10px; vertical-align: top; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge.dhl { background: rgba(255,176,32,0.15); color: var(--dhl); }
+  .badge.domestic { background: rgba(46,204,113,0.15); color: var(--domestic); }
+  .badge.unknown { background: rgba(138,145,156,0.15); color: var(--text-dim); }
+
+  .order-no { font-family: var(--mono); font-weight: 600; }
+  .items-list { color: var(--text-dim); font-size: 12px; line-height: 1.6; }
+  .items-list .sku { font-family: var(--mono); color: var(--text); }
+  .items-list .no-sku { color: var(--danger); }
+
+  .addr-box { font-size: 12px; color: var(--text-dim); max-width: 220px; }
+  .addr-box .edit-btn { font-size: 11px; color: var(--accent); cursor: pointer; margin-top: 4px; display: inline-block; }
+
+  .note-badge {
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--panel-2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    display: inline-block;
+    margin-top: 4px;
+    max-width: 200px;
+  }
+
+  input[type="text"], input[type="number"] {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 5px 8px;
+    font-size: 12px;
+    width: 130px;
+  }
+  input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+
+  .status-msg { font-size: 12px; margin-top: 6px; }
+  .status-msg.ok { color: var(--domestic); }
+  .status-msg.err { color: var(--danger); }
+
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-dim);
+  }
+
+  .loading {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>해외주문 발송 처리 <span class="sub">GEONWORKS</span></h1>
+  <div id="user-info" style="display:none; align-items:center; gap:10px; font-size:12px; color:var(--text-dim);">
+    <span id="user-email"></span>
+    <button id="logout-btn">로그아웃</button>
+  </div>
+</header>
+
+<div id="login-screen">
+  <p>@geon.works 계정으로 로그인해주세요</p>
+  <div id="g_id_signin"></div>
+</div>
+
+<main id="main">
+  <div class="tabs">
+    <div class="tab active" data-tab="dhl">DHL 발송건 <span class="count" id="count-dhl">0</span></div>
+    <div class="tab" data-tab="domestic">국내 배송건 <span class="count" id="count-domestic">0</span></div>
+    <div class="tab" data-tab="groupbuy">Group Buy (제외됨) <span class="count" id="count-groupbuy">0</span></div>
+  </div>
+
+  <div class="toolbar">
+    <button id="refresh-btn">↻ 새로고침</button>
+    <span id="last-updated" style="font-size:12px; color:var(--text-dim);"></span>
+  </div>
+
+  <div id="table-container">
+    <div class="loading">로그인 후 주문을 불러옵니다...</div>
+  </div>
+</main>
+
+<script>
+// ── 설정 ──────────────────────────────────────────────────────────
+const SUPABASE_FUNCTIONS_BASE = "https://yqpskohzmnfiymjrgdxj.supabase.co/functions/v1";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlxcHNrb2h6bW5maXltanJnZHhqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MjQwMTgsImV4cCI6MjA5NDAwMDAxOH0.D75U1e8JMvVI0K2Ccq5DwOliPg_rt-2uvKse1V2fiqw";
+const GOOGLE_CLIENT_ID = "666157816733-0uu1dkoda0ljjslrd479j371snkj62t7.apps.googleusercontent.com";
+const ALLOWED_DOMAIN = "geon.works";
+const DEFAULT_WAREHOUSE_ID = 3; // 셀메이트 해외창고 id — 필요시 조정
+
+let allOrders = [];
+let currentTab = "dhl";
+
+// ── 인증 ──────────────────────────────────────────────────────────
+function handleCredentialResponse(response) {
+  const payload = parseJwt(response.credential);
+  if (!payload.email || !payload.email.endsWith("@" + ALLOWED_DOMAIN) || !payload.email_verified) {
+    alert("@" + ALLOWED_DOMAIN + " 계정으로만 로그인할 수 있습니다.");
+    return;
+  }
+  sessionStorage.setItem("user_email", payload.email);
+  showApp(payload.email);
+}
+
+function parseJwt(token) {
+  return JSON.parse(atob(token.split(".")[1]));
+}
+
+function showApp(email) {
+  document.getElementById("login-screen").style.display = "none";
+  document.getElementById("main").classList.add("visible");
+  document.getElementById("user-info").style.display = "flex";
+  document.getElementById("user-email").textContent = email;
+  loadOrders();
+}
+
+document.getElementById("logout-btn").addEventListener("click", () => {
+  sessionStorage.removeItem("user_email");
+  location.reload();
+});
+
+window.onload = () => {
+  const savedEmail = sessionStorage.getItem("user_email");
+  if (savedEmail) {
+    showApp(savedEmail);
+    return;
+  }
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback: handleCredentialResponse,
+    hosted_domain: ALLOWED_DOMAIN,
+  });
+  google.accounts.id.renderButton(document.getElementById("g_id_signin"), {
+    theme: "filled_black",
+    size: "large",
+  });
+};
+
+// ── Edge Function 호출 ──────────────────────────────────────────
+async function callFunction(name, body) {
+  const resp = await fetch(`${SUPABASE_FUNCTIONS_BASE}/${name}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const json = await resp.json();
+  if (!resp.ok || json.error) {
+    throw new Error(json.error || `${name} 호출 실패`);
+  }
+  return json.data;
+}
+
+// ── 주문 로딩 및 분류 ────────────────────────────────────────────
+async function loadOrders() {
+  document.getElementById("table-container").innerHTML = '<div class="loading">주문을 불러오는 중...</div>';
+  try {
+    allOrders = await callFunction("shopify-orders", { action: "list" });
+    document.getElementById("last-updated").textContent =
+      "마지막 갱신: " + new Date().toLocaleTimeString("ko-KR");
+    render();
+  } catch (err) {
+    document.getElementById("table-container").innerHTML =
+      `<div class="empty-state">주문 조회 실패: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function isGroupBuy(order) {
+  return order.lineItems.some((li) => li.title && li.title.startsWith("[Group Buy]"));
+}
+
+function classify(order) {
+  if (isGroupBuy(order)) return "groupbuy";
+  const method = (order.shippingMethod || "").toUpperCase();
+  if (method.includes("DHL")) return "dhl";
+  if (order.shippingMethod && order.shippingMethod.includes("국내")) return "domestic";
+  return "domestic"; // 배송방법이 비어있거나 애매하면 국내 탭으로 (사람이 확인)
+}
+
+function render() {
+  const grouped = { dhl: [], domestic: [], groupbuy: [] };
+  for (const o of allOrders) grouped[classify(o)].push(o);
+
+  document.getElementById("count-dhl").textContent = grouped.dhl.length;
+  document.getElementById("count-domestic").textContent = grouped.domestic.length;
+  document.getElementById("count-groupbuy").textContent = grouped.groupbuy.length;
+
+  const list = grouped[currentTab];
+  const container = document.getElementById("table-container");
+
+  if (list.length === 0) {
+    container.innerHTML = '<div class="empty-state">해당 탭에 주문이 없습니다.</div>';
+    return;
+  }
+
+  const rows = list.map((o) => renderRow(o, currentTab)).join("");
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>주문번호</th>
+          <th>배송방법</th>
+          <th>수령자 / 주소</th>
+          <th>품목 (SKU)</th>
+          <th>관세확인</th>
+          <th>발송처리</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+  // 이벤트 바인딩
+  list.forEach((o) => bindRowEvents(o));
+}
+
+function renderRow(order, tab) {
+  const badgeClass = tab === "dhl" ? "dhl" : tab === "domestic" ? "domestic" : "unknown";
+  const badgeLabel = order.shippingMethod || "미확인";
+
+  const itemsHtml = order.lineItems
+    .map((li) => {
+      const skuHtml = li.sku
+        ? `<span class="sku">${escapeHtml(li.sku)}</span>`
+        : `<span class="no-sku">SKU 없음</span>`;
+      return `${escapeHtml(li.title)} × ${li.quantity} — ${skuHtml}`;
+    })
+    .join("<br>");
+
+  const addr = order.shippingAddress || {};
+  const addrText = [addr.name, addr.address1, addr.address2, addr.city, addr.province, addr.country]
+    .filter(Boolean)
+    .join(", ");
+
+  const noteHtml = order.note
+    ? `<div class="note-badge" title="${escapeHtml(order.note)}">메모: ${escapeHtml(order.note.slice(0, 40))}</div>`
+    : "";
+
+  const fulfillControls =
+    tab === "domestic"
+      ? `
+        <input type="text" placeholder="운송장번호" class="tracking-input" data-order-id="${order.id}" />
+        <button class="primary fulfill-btn" data-order-id="${order.id}">발송처리</button>
+        <div class="status-msg" id="status-${cssId(order.id)}"></div>
+      `
+      : `<span style="color:var(--text-dim); font-size:12px;">DHL 리포트 업로드에서 일괄 처리</span>`;
+
+  return `
+    <tr data-order-id="${order.id}">
+      <td>
+        <div class="order-no">${escapeHtml(order.orderNumber)}</div>
+        <div style="font-size:11px; color:var(--text-dim);">${new Date(order.createdAt).toLocaleDateString("ko-KR")}</div>
+        ${noteHtml}
+      </td>
+      <td><span class="badge ${badgeClass}">${escapeHtml(badgeLabel)}</span></td>
+      <td>
+        <div class="addr-box">
+          ${escapeHtml(addrText)}
+          <div class="edit-btn" data-order-id="${order.id}">주소 수정</div>
+        </div>
+      </td>
+      <td><div class="items-list">${itemsHtml}</div></td>
+      <td style="text-align:center;"><input type="checkbox" class="customs-check" /></td>
+      <td>${fulfillControls}</td>
+    </tr>
+  `;
+}
+
+function cssId(id) {
+  return id.replace(/[^a-zA-Z0-9]/g, "_");
+}
+
+function bindRowEvents(order) {
+  const btn = document.querySelector(`.fulfill-btn[data-order-id="${cssAttr(order.id)}"]`);
+  if (btn) {
+    btn.addEventListener("click", () => handleDomesticFulfill(order));
+  }
+  const editBtn = document.querySelector(`.edit-btn[data-order-id="${cssAttr(order.id)}"]`);
+  if (editBtn) {
+    editBtn.addEventListener("click", () => handleAddressEdit(order));
+  }
+}
+
+function cssAttr(id) {
+  return id.replace(/"/g, '\\"');
+}
+
+// ── 국내 배송건: 운송장 입력 → 발송처리 + 재고차감 ─────────────────
+async function handleDomesticFulfill(order) {
+  const input = document.querySelector(`.tracking-input[data-order-id="${cssAttr(order.id)}"]`);
+  const statusEl = document.getElementById(`status-${cssId(order.id)}`);
+  const tracking = input.value.trim();
+
+  if (!tracking) {
+    statusEl.textContent = "운송장번호를 입력해주세요.";
+    statusEl.className = "status-msg err";
+    return;
+  }
+  if (!order.fulfillmentOrderIds || order.fulfillmentOrderIds.length === 0) {
+    statusEl.textContent = "이 주문에 연결된 fulfillment order가 없습니다.";
+    statusEl.className = "status-msg err";
+    return;
+  }
+
+  const btn = document.querySelector(`.fulfill-btn[data-order-id="${cssAttr(order.id)}"]`);
+  btn.disabled = true;
+  statusEl.textContent = "처리 중...";
+  statusEl.className = "status-msg";
+
+  try {
+    // 1) Shopify 발송처리
+    await callFunction("shopify-orders", {
+      action: "fulfill",
+      fulfillmentOrderId: order.fulfillmentOrderIds[0],
+      trackingNumber: tracking,
+      carrier: "우체국택배",
+    });
+
+    // 2) 셀메이트 재고차감
+    const skuItems = order.lineItems
+      .filter((li) => li.sku)
+      .map((li) => ({ sku: li.sku, quantity: li.quantity }));
+
+    let deductResult = null;
+    if (skuItems.length > 0) {
+      deductResult = await callFunction("sellmate-stock", {
+        action: "deduct",
+        warehouseId: DEFAULT_WAREHOUSE_ID,
+        items: skuItems,
+        note: `Shopify ${order.orderNumber}`,
+      });
+    }
+
+    const unmatched = deductResult?.unmatchedSkus || [];
+    if (unmatched.length > 0) {
+      statusEl.textContent = `발송처리 완료. ⚠ SKU 매칭 실패: ${unmatched.join(", ")} (재고 수동 확인 필요)`;
+      statusEl.className = "status-msg err";
+    } else {
+      statusEl.textContent = "발송처리 + 재고차감 완료";
+      statusEl.className = "status-msg ok";
+    }
+
+    // 목록에서 제거 (다음 새로고침 전까지 처리됨 표시)
+    setTimeout(() => loadOrders(), 1500);
+  } catch (err) {
+    statusEl.textContent = "실패: " + err.message;
+    statusEl.className = "status-msg err";
+    btn.disabled = false;
+  }
+}
+
+// ── 주소 수정 (간단한 prompt 기반, 추후 모달로 개선 가능) ───────────
+async function handleAddressEdit(order) {
+  const addr = order.shippingAddress || {};
+  const address1 = prompt("주소 1", addr.address1 || "");
+  if (address1 === null) return;
+  const city = prompt("도시", addr.city || "");
+  if (city === null) return;
+
+  try {
+    await callFunction("shopify-orders", {
+      action: "updateAddress",
+      orderId: order.id,
+      address: { ...addr, address1, city },
+    });
+    alert("주소가 수정되었습니다.");
+    loadOrders();
+  } catch (err) {
+    alert("주소 수정 실패: " + err.message);
+  }
+}
+
+// ── 탭 전환 / 새로고침 ───────────────────────────────────────────
+document.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    currentTab = tab.dataset.tab;
+    render();
+  });
+});
+
+document.getElementById("refresh-btn").addEventListener("click", loadOrders);
+
+function escapeHtml(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+</script>
+
+</body>
+</html>
