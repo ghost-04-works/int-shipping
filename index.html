@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-rowheight-hpx-bug-fixed-header-double -->
+<!-- VERSION-MARKER: 2026-07-30-colwidth-exact-formula-8x-minus5-div7 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -993,7 +993,7 @@ const BOX_BORDER = { top: THIN_BORDER, bottom: THIN_BORDER, left: THIN_BORDER, r
 
 function setCellStyle(ws, r, c, style) {
   const ref = XLSX.utils.encode_cell({ r, c });
-  if (!ws[ref]) ws[ref] = { t: "s", v: "" };
+  if (!ws[ref]) ws[ref] = { t: "z" }; // 값 없는 서식전용 셀 — 인접 셀 텍스트 넘침(overflow)을 막지 않음
   ws[ref].s = { ...(ws[ref].s || {}), ...style };
 }
 
@@ -1125,10 +1125,10 @@ function exportChulgobon(orders) {
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!merges"] = merges;
-  const W2 = 0.83203125;
+  const toWch2 = (v) => (v * 8 - 5) / 7;
   ws["!cols"] = [
-    { wch: 7.625 - W2 }, { wch: 11.625 - W2 }, { wch: 5.25 - W2 },
-    { wch: 90.875 - W2 }, { wch: 5.25 - W2 }, { wch: 5.25 - W2 },
+    { wch: toWch2(7.625) }, { wch: toWch2(11.625) }, { wch: toWch2(5.25) },
+    { wch: toWch2(90.875) }, { wch: toWch2(5.25) }, { wch: toWch2(5.25) },
   ];
 
   // 헤더 배경색 (원본: FFFFCC) + 폰트 11pt (원본과 동일)
@@ -1264,20 +1264,23 @@ function exportGmi(orders, originMap) {
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!merges"] = merges;
-  // 라이브러리가 wch->실제폭 변환 시 일정하게 +0.83203125 를 더하는 현상이 확인되어
-  // 목표값에서 미리 빼서 보정함
-  const W = 0.83203125;
+  // 실측 2개 지점으로 역산한 정확한 변환식: 입력값 = (원본저장값*8 - 5) / 7
+  // (원본: 저장값*8=픽셀 / 우리 라이브러리: 입력값*7+5=픽셀 → 두 식을 연립)
+  const toWch = (v) => (v * 8 - 5) / 7;
   ws["!cols"] = [
-    { wch: 22.375 - W }, { wch: 27.75 - W }, { wch: 6.75 - W }, { wch: 8.25 - W }, { wch: 7.5 - W },
-    { wch: 6.25 - W }, { wch: 7.375 - W }, { wch: 13 - W }, { wch: 11.25 - W }, { wch: 17.375 - W },
-    { wch: 12.75 - W }, { wch: 65.125 - W }, { wch: 8.625 - W }, { wch: 13 - W }, { wch: 13 - W },
-    { wch: 6.75 - W }, { wch: 14.625 - W }, { wch: 8.625 - W }, { wch: 13 - W }, { wch: 10.375 - W },
+    { wch: toWch(22.375) }, { wch: toWch(27.75) }, { wch: toWch(6.75) }, { wch: toWch(8.25) }, { wch: toWch(7.5) },
+    { wch: toWch(6.25) }, { wch: toWch(7.375) }, { wch: toWch(13) }, { wch: toWch(11.25) }, { wch: toWch(17.375) },
+    { wch: toWch(12.75) }, { wch: toWch(65.125) }, { wch: toWch(8.625) }, { wch: toWch(13) }, { wch: toWch(13) },
+    { wch: toWch(6.75) }, { wch: toWch(14.625) }, { wch: toWch(8.625) }, { wch: toWch(13) }, { wch: toWch(10.375) },
   ];
 
   // 제목행/수량행: 병합이 아니라 A~C 3칸만 개별적으로 같은 배경색(D1D9F1)+폰트12pt
+  // (A열만 중앙정렬 — 원본 확인됨. B,C는 정렬 미지정)
   for (const r of [0, 1]) {
     for (let c = 0; c < 3; c++) {
-      setCellStyle(ws, r, c, { fill: { fgColor: { rgb: "D1D9F1" } }, font: { sz: 12, name: "맑은 고딕" } });
+      const style = { fill: { fgColor: { rgb: "D1D9F1" } }, font: { sz: 12, name: "맑은 고딕" } };
+      if (c === 0) style.alignment = { horizontal: "center", vertical: "center" };
+      setCellStyle(ws, r, c, style);
     }
   }
 
