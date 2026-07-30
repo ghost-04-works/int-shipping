@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-styled-with-xlsx-js-style -->
+<!-- VERSION-MARKER: 2026-07-30-exact-widths-titlerow-headerborder-fixed -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -1123,11 +1123,15 @@ function exportChulgobon(orders) {
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!merges"] = merges;
-  ws["!cols"] = [{ wch: 10 }, { wch: 14 }, { wch: 6 }, { wch: 45 }, { wch: 6 }, { wch: 6 }];
+  ws["!cols"] = [{ wch: 7.625 }, { wch: 11.625 }, { wch: 5.25 }, { wch: 90.875 }, { wch: 5.25 }, { wch: 5.25 }];
 
   // 헤더 배경색 (원본: FFFFCC)
   for (let c = 0; c < 6; c++) {
-    setCellStyle(ws, 0, c, { fill: { fgColor: { rgb: "FFFFCC" } }, alignment: { horizontal: "center", vertical: "center" } });
+    setCellStyle(ws, 0, c, {
+      fill: { fgColor: { rgb: "FFFFCC" } },
+      border: BOX_BORDER,
+      alignment: { horizontal: "center", vertical: "center" },
+    });
   }
   // 데이터 영역 테두리 + 정렬 (Lineitem name 컬럼(3)만 좌측 정렬)
   if (rows.length > 1) {
@@ -1152,7 +1156,7 @@ function exportGmi(orders, originMap) {
     ["수량 ", 0, "개"], // 0은 아래에서 실제 블록 수로 갱신
     header,
   ];
-  const merges = [{ s: { r: 0, c: 0 }, e: { r: 0, c: header.length - 1 } }]; // 제목행 전체 병합
+  const merges = []; // 제목행/수량행은 병합이 아니라 개별 셀 배경색이므로 병합 없음
 
   let blockCount = 0;
 
@@ -1243,15 +1247,19 @@ function exportGmi(orders, originMap) {
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!merges"] = merges;
   ws["!cols"] = [
-    { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 5 }, { wch: 8 }, { wch: 5 }, { wch: 8 }, { wch: 10 },
-    { wch: 10 }, { wch: 14 }, { wch: 13 }, { wch: 35 }, { wch: 7 }, { wch: 7 }, { wch: 7 }, { wch: 7 },
-    { wch: 10 }, { wch: 7 }, { wch: 13 }, { wch: 13 },
+    { wch: 22.375 }, { wch: 27.75 }, { wch: 6.75 }, { wch: 8.25 }, { wch: 7.5 }, { wch: 6.25 }, { wch: 7.375 }, { wch: 13 },
+    { wch: 11.25 }, { wch: 17.375 }, { wch: 12.75 }, { wch: 65.125 }, { wch: 8.625 }, { wch: 13 }, { wch: 13 }, { wch: 6.75 },
+    { wch: 14.625 }, { wch: 8.625 }, { wch: 13 }, { wch: 10.375 },
   ];
 
-  // 제목행 스타일 (원본: 배경 D1D9F1, 폰트 12pt)
-  setCellStyle(ws, 0, 0, { fill: { fgColor: { rgb: "D1D9F1" } }, font: { sz: 12 } });
+  // 제목행/수량행: 병합이 아니라 A~C 3칸만 개별적으로 같은 배경색(D1D9F1)+폰트12pt
+  for (const r of [0, 1]) {
+    for (let c = 0; c < 3; c++) {
+      setCellStyle(ws, r, c, { fill: { fgColor: { rgb: "D1D9F1" } }, font: { sz: 12 } });
+    }
+  }
 
-  // 헤더 컬럼별 배경색 (원본 실측값)
+  // 헤더 컬럼별 배경색 (원본 실측값) + 테두리
   const HEADER_COLORS = [
     "FF99FF", "FF99FF", "FF99FF", "FFC000", "FFC000", "FF99FF", "FF99FF", "FF99FF",
     "FFC000", "FFFF00", "FFFF00", "FF99FF", "FFFF00", "FFFF00", "FFFF00", "FFFF00",
@@ -1260,6 +1268,7 @@ function exportGmi(orders, originMap) {
   HEADER_COLORS.forEach((color, c) => {
     setCellStyle(ws, 2, c, {
       fill: { fgColor: { rgb: color } },
+      border: BOX_BORDER,
       font: { bold: true },
       alignment: { horizontal: "center", vertical: "center", wrapText: true },
     });
