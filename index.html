@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-fontname-matched -->
+<!-- VERSION-MARKER: 2026-07-30-rowheights-qty-highlight-fixed -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -1094,6 +1094,7 @@ document.getElementById("origin-modal-confirm").addEventListener("click", () => 
 function exportChulgobon(orders) {
   const rows = [["오더", "송장번호", "확인", "Lineitem name", "수량", "확인"]];
   const merges = [];
+  const highlightQtyRows = []; // 수량 > 1인 행의 인덱스 목록
 
   for (const order of orders) {
     const match = dhlReportMap[order.orderNumber] || {};
@@ -1108,6 +1109,7 @@ function exportChulgobon(orders) {
         li.quantity,
         "",
       ]);
+      if (li.quantity > 1) highlightQtyRows.push(rows.length - 1);
       first = false;
     }
     const blockEndRow = rows.length - 1;
@@ -1141,6 +1143,14 @@ function exportChulgobon(orders) {
       for (let c = 0; c < 6; c++) setCellStyle(ws, r, c, { font: { sz: 12, name: "맑은 고딕" } });
     }
   }
+
+  // 수량 > 1인 셀: 노란 배경 + 빨간 글씨 (원본 확인된 강조 규칙)
+  for (const r of highlightQtyRows) {
+    setCellStyle(ws, r, 4, { fill: { fgColor: { rgb: "FFFF00" } }, font: { sz: 12, name: "맑은 고딕", color: { rgb: "FF0000" } } });
+  }
+
+  // 행 높이 (원본: 전체 15.95)
+  ws["!rows"] = rows.map(() => ({ hpt: 15.95 }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "출고분");
@@ -1285,6 +1295,9 @@ function exportGmi(orders, originMap) {
       for (let c = 0; c < 20; c++) setCellStyle(ws, r, c, { font: { name: "맑은 고딕" } });
     }
   }
+
+  // 행 높이 (원본: 1~2행 17.25, 헤더부터 16.5)
+  ws["!rows"] = rows.map((_, idx) => ({ hpt: idx < 2 ? 17.25 : 16.5 }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
