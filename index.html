@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-title-merge-c-merge-trailing-row-fixed -->
+<!-- VERSION-MARKER: 2026-07-30-chulgobon-d-col-width-adjusted -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -1133,7 +1133,8 @@ function exportChulgobon(orders) {
   const toWch2 = (v) => (v * 8 - 5) / 7;
   ws["!cols"] = [
     { wch: toWch2(7.625) }, { wch: toWch2(11.625) }, { wch: toWch2(5.25) },
-    { wch: toWch2(90.875) }, { wch: toWch2(5.25) }, { wch: toWch2(5.25) },
+    { wch: 720 / 7 }, // D열(Lineitem name) — 실측 결과 102.86(725px)로 직접 지정
+    { wch: toWch2(5.25) }, { wch: toWch2(5.25) },
   ];
 
   // 헤더 배경색 (원본: FFFFCC) + 폰트 11pt (원본과 동일)
