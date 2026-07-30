@@ -504,9 +504,7 @@ async function loadProcessedOrders() {
 }
 
 function render() {
-  const showDhlToolbar = currentTab === "dhl" || currentTab === "processed";
-  document.getElementById("dhl-toolbar").style.display = showDhlToolbar ? "flex" : "none";
-  document.getElementById("dhl-process-btn").style.display = currentTab === "dhl" ? "inline-block" : "none";
+  document.getElementById("dhl-toolbar").style.display = currentTab === "dhl" ? "flex" : "none";
 
   if (currentTab === "processed") {
     const container = document.getElementById("table-container");
@@ -519,7 +517,6 @@ function render() {
       <table>
         <thead>
           <tr>
-            <th></th>
             <th>주문번호</th>
             <th>배송방법</th>
             <th>수령자 / 주소</th>
@@ -531,7 +528,6 @@ function render() {
         <tbody>${rows}</tbody>
       </table>
     `;
-    bindDhlCheckboxes();
     return;
   }
 
@@ -628,7 +624,7 @@ function renderRow(order, tab) {
       : `<span style="color:var(--text-dim); font-size:12px;">DHL 리포트 업로드에서 일괄 처리</span>`;
 
   const checkboxCell =
-    tab === "dhl" || tab === "processed"
+    tab === "dhl"
       ? `<td><input type="checkbox" class="dhl-select" data-order-id="${order.id}" ${
           selectedDhlOrderIds.has(order.id) ? "checked" : ""
         } /></td>`
@@ -967,8 +963,9 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
 let originReviewTargets = [];
 
 document.getElementById("dhl-export-btn").addEventListener("click", async () => {
-  const sourceList = currentTab === "processed" ? processedOrders : allOrders.filter((o) => classify(o) === "dhl");
-  const targets = sourceList.filter((o) => selectedDhlOrderIds.has(o.id));
+  const targets = allOrders.filter(
+    (o) => classify(o) === "dhl" && selectedDhlOrderIds.has(o.id)
+  );
   if (targets.length === 0) {
     alert("엑셀로 생성할 주문을 먼저 체크박스로 선택해주세요.");
     return;
