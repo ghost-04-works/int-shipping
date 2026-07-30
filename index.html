@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-gmi-columns-fixed -->
+<!-- VERSION-MARKER: 2026-07-30-auto-select-from-report -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -876,7 +876,20 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
     }
 
     statusEl.textContent = `${Object.keys(dhlReportMap).length}건 매칭 데이터 로드됨`;
-    render(); // 매칭 상태 갱신
+
+    // 리포트에 있는 주문번호들을 자동으로 체크 선택
+    const reportOrderNumbers = new Set(Object.keys(dhlReportMap));
+    const candidateList = currentTab === "processed" ? processedOrders : allOrders;
+    let autoSelectedCount = 0;
+    for (const order of candidateList) {
+      if (reportOrderNumbers.has(order.orderNumber)) {
+        selectedDhlOrderIds.add(order.id);
+        autoSelectedCount++;
+      }
+    }
+    statusEl.textContent += ` — ${autoSelectedCount}건 자동 선택됨`;
+
+    render(); // 매칭 상태 + 체크박스 갱신
   } catch (err) {
     statusEl.textContent = "파싱 실패: " + err.message;
   }
