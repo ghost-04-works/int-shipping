@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-colwidth-exact-formula-8x-minus5-div7 -->
+<!-- VERSION-MARKER: 2026-07-30-title-merge-c-merge-trailing-row-fixed -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -1096,7 +1096,8 @@ function exportChulgobon(orders) {
   const merges = [];
   const highlightQtyRows = []; // 수량 > 1인 행의 인덱스 목록
 
-  for (const order of orders) {
+  for (let idx = 0; idx < orders.length; idx++) {
+    const order = orders[idx];
     const match = dhlReportMap[order.orderNumber] || {};
     const blockStartRow = rows.length; // 이 블록의 첫 데이터 행 인덱스 (0-based, 시트 행 번호와 동일)
     let first = true;
@@ -1118,9 +1119,13 @@ function exportChulgobon(orders) {
     if (blockEndRow > blockStartRow) {
       merges.push({ s: { r: blockStartRow, c: 0 }, e: { r: blockEndRow, c: 0 } }); // 오더
       merges.push({ s: { r: blockStartRow, c: 1 }, e: { r: blockEndRow, c: 1 } }); // 송장번호
+      merges.push({ s: { r: blockStartRow, c: 2 }, e: { r: blockEndRow, c: 2 } }); // 확인
     }
 
-    rows.push(["", "", "", "", "", ""]); // 주문 블록 사이 빈 줄
+    // 주문 블록 사이 빈 줄 (마지막 블록 뒤에는 추가하지 않음 — 원본 확인됨)
+    if (idx < orders.length - 1) {
+      rows.push(["", "", "", "", "", ""]);
+    }
   }
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
@@ -1174,7 +1179,7 @@ function exportGmi(orders, originMap) {
     ["수량 ", 0, "개"], // 0은 아래에서 실제 블록 수로 갱신
     header,
   ];
-  const merges = []; // 제목행/수량행은 병합이 아니라 개별 셀 배경색이므로 병합 없음
+  const merges = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 2 } }]; // 제목행 A1:C1 병합 (좌측정렬)
 
   let blockCount = 0;
 
@@ -1274,12 +1279,12 @@ function exportGmi(orders, originMap) {
     { wch: toWch(6.75) }, { wch: toWch(14.625) }, { wch: toWch(8.625) }, { wch: toWch(13) }, { wch: toWch(10.375) },
   ];
 
-  // 제목행/수량행: 병합이 아니라 A~C 3칸만 개별적으로 같은 배경색(D1D9F1)+폰트12pt
-  // (A열만 중앙정렬 — 원본 확인됨. B,C는 정렬 미지정)
+  // 제목행(1행)은 A1:C1 병합 + 좌측정렬, 수량행(2행)은 A열만 중앙정렬(원본 확인됨)
   for (const r of [0, 1]) {
     for (let c = 0; c < 3; c++) {
       const style = { fill: { fgColor: { rgb: "D1D9F1" } }, font: { sz: 12, name: "맑은 고딕" } };
-      if (c === 0) style.alignment = { horizontal: "center", vertical: "center" };
+      if (r === 0) style.alignment = { horizontal: "left", vertical: "center" };
+      else if (c === 0) style.alignment = { horizontal: "center", vertical: "center" };
       setCellStyle(ws, r, c, style);
     }
   }
