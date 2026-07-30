@@ -230,6 +230,25 @@
     font-size: 12px;
     margin-top: 8px;
   }
+
+  .origin-modal-box {
+    width: 640px;
+  }
+  .origin-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .origin-table th, .origin-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+  .origin-table input[type="text"] {
+    width: 70px;
+    text-transform: uppercase;
+  }
+  .origin-table tr.missing input { border-color: var(--danger); }
 </style>
 </head>
 <body>
@@ -335,6 +354,28 @@
     <div class="modal-actions">
       <button id="modal-cancel">취소</button>
       <button class="primary" id="modal-save">저장</button>
+    </div>
+  </div>
+</div>
+
+<div id="origin-modal" class="modal-overlay">
+  <div class="modal-box origin-modal-box">
+    <h2>원산지 확인 — GMI 수출신고 생성 전</h2>
+    <p style="font-size:12px; color:var(--text-dim); margin-top:-8px;">
+      빨간 테두리는 셀메이트에 원산지 코드가 없는 품목입니다. 직접 입력해주세요.
+    </p>
+    <div style="max-height:50vh; overflow-y:auto;">
+      <table class="origin-table">
+        <thead>
+          <tr><th>주문번호</th><th>품목</th><th>SKU</th><th>원산지코드</th></tr>
+        </thead>
+        <tbody id="origin-table-body"></tbody>
+      </table>
+    </div>
+    <div class="modal-error" id="origin-modal-error"></div>
+    <div class="modal-actions">
+      <button id="origin-modal-cancel">취소</button>
+      <button class="primary" id="origin-modal-confirm">확인 후 엑셀 생성</button>
     </div>
   </div>
 </div>
@@ -919,7 +960,9 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
 });
 
 // ── 출고분 / GMI 수출신고 엑셀 생성 ────────────────────────────────
-document.getElementById("dhl-export-btn").addEventListener("click", () => {
+let originReviewTargets = [];
+
+document.getElementById("dhl-export-btn").addEventListener("click", async () => {
   const targets = allOrders.filter(
     (o) => classify(o) === "dhl" && selectedDhlOrderIds.has(o.id)
   );
@@ -928,8 +971,65 @@ document.getElementById("dhl-export-btn").addEventListener("click", () => {
     return;
   }
 
-  exportChulgobon(targets);
-  exportGmi(targets);
+  originReviewTargets = targets;
+
+  const skus = [...new Set(targets.flatMap((o) => o.lineItems.filter((li) => li.sku).map((li) => li.sku)))];
+  let lookup = {};
+  try {
+    lookup = await callFunction("sellmate-stock", { action: "lookupProducts", skus });
+  } catch (err) {
+    alert("원산지 조회 실패: " + err.message + " — 빈 값으로 진행합니다.");
+  }
+
+  openOriginModal(targets, lookup);
+});
+
+function openOriginModal(targets, lookup) {
+  const tbody = document.getElementById("origin-table-body");
+  const rowsHtml = [];
+  for (const order of targets) {
+    for (const li of order.lineItems) {
+      if (!li.sku) continue;
+      const info = lookup[li.sku];
+      const origin = info?.originCode || "";
+      rowsHtml.push(`
+        <tr class="${origin ? "" : "missing"}" data-sku="${escapeHtml(li.sku)}">
+          <td>${escapeHtml(order.orderNumber)}</td>
+          <td>${escapeHtml(li.title)}</td>
+          <td>${escapeHtml(li.sku)}</td>
+          <td><input type="text" class="origin-input" data-sku="${escapeHtml(li.sku)}" value="${escapeHtml(origin)}" maxlength="2" /></td>
+        </tr>
+      `);
+    }
+  }
+  tbody.innerHTML = rowsHtml.join("");
+  document.getElementById("origin-modal-error").textContent = "";
+  document.getElementById("origin-modal").classList.add("visible");
+}
+
+document.getElementById("origin-modal-cancel").addEventListener("click", () => {
+  document.getElementById("origin-modal").classList.remove("visible");
+});
+
+document.getElementById("origin-modal-confirm").addEventListener("click", () => {
+  const errorEl = document.getElementById("origin-modal-error");
+  const originMap = {};
+  let hasMissing = false;
+
+  document.querySelectorAll(".origin-input").forEach((input) => {
+    const val = input.value.trim().toUpperCase();
+    originMap[input.dataset.sku] = val;
+    if (!val) hasMissing = true;
+  });
+
+  if (hasMissing) {
+    errorEl.textContent = "비어있는 원산지코드가 있습니다. 모두 입력해주세요.";
+    return;
+  }
+
+  document.getElementById("origin-modal").classList.remove("visible");
+  exportChulgobon(originReviewTargets);
+  exportGmi(originReviewTargets, originMap);
 });
 
 function exportChulgobon(orders) {
@@ -957,7 +1057,7 @@ function exportChulgobon(orders) {
   XLSX.writeFile(wb, fname);
 }
 
-function exportGmi(orders) {
+function exportGmi(orders, originMap) {
   const header = [
     "AWB NO", "구매자", "목적국", "CT", "총중량", "수량", "단가", "금액",
     "신고품명", "HS CODE", "모델명(규격)", "인도조건", "화폐단위", "환급유무", "원산지",
@@ -989,7 +1089,7 @@ function exportGmi(orders) {
         "DAP",
         "USD",
         "Y",
-        "", // 원산지 — 데이터 소스 확인 후 자동 채움 예정, 현재는 수동 입력
+        originMap[li.sku] || "",
       ]);
     }
     if (match.freight && parseFloat(match.freight) > 0) {
