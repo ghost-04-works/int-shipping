@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-auto-select-from-report -->
+<!-- VERSION-MARKER: 2026-07-30-format-matched-to-original -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -1050,7 +1050,7 @@ document.getElementById("origin-modal-confirm").addEventListener("click", () => 
 });
 
 function exportChulgobon(orders) {
-  const rows = [["주문번호", "송장번호", "무게(kg)", "수령인", "품목", "수량"]];
+  const rows = [["오더", "송장번호", "확인", "Lineitem name", "수량", "확인"]];
   for (const order of orders) {
     const match = dhlReportMap[order.orderNumber] || {};
     let first = true;
@@ -1058,13 +1058,14 @@ function exportChulgobon(orders) {
       rows.push([
         first ? order.orderNumber : "",
         first ? match.tracking || "" : "",
-        first ? match.weight || "" : "",
-        first ? match.shipto || "" : "",
+        "", // 확인 (수기 체크용, 항상 빈칸)
         li.title,
         li.quantity,
+        "", // 확인 (수기 체크용, 항상 빈칸)
       ]);
       first = false;
     }
+    rows.push(["", "", "", "", "", ""]); // 주문 블록 사이 빈 줄 (원본과 동일)
   }
   const ws = XLSX.utils.aoa_to_sheet(rows);
   const wb = XLSX.utils.book_new();
@@ -1080,7 +1081,12 @@ function exportGmi(orders, originMap) {
     "신고품명", "HS CODE", "모델명(규격)", "인도조건", "화폐단위", "환급유무", "원산지",
     "송품장번호", "거래구분", "사업자번호(수출자)", "사업자번호(제조자)",
   ];
-  const rows = [header];
+  const rows = [
+    ["■DHL 수출신고서 : GMI"],
+    ["수량", "", "개"],
+    header,
+    [],
+  ];
 
   for (const order of orders) {
     const match = dhlReportMap[order.orderNumber];
