@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-variant-title-order-nosku-fixed -->
+<!-- VERSION-MARKER: 2026-07-30-styled-with-xlsx-js-style -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>해외주문 발송 처리</title>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <style>
   :root {
     --bg: #0f1216;
@@ -980,13 +980,35 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
   setTimeout(() => loadOrders(), 2000);
 });
 
-function sortByReportOrder(orders) {
-  const indexMap = new Map(dhlReportOrderSequence.map((no, idx) => [no, idx]));
-  return [...orders].sort((a, b) => {
-    const ia = indexMap.has(a.orderNumber) ? indexMap.get(a.orderNumber) : Infinity;
-    const ib = indexMap.has(b.orderNumber) ? indexMap.get(b.orderNumber) : Infinity;
-    return ia - ib;
-  });
+function sortByOrderNumber(orders) {
+  const parseNo = (orderNumber) => {
+    const digits = (orderNumber || "").replace(/[^0-9]/g, "");
+    return digits ? parseInt(digits, 10) : Infinity;
+  };
+  return [...orders].sort((a, b) => parseNo(a.orderNumber) - parseNo(b.orderNumber));
+}
+
+const THIN_BORDER = { style: "thin", color: { rgb: "000000" } };
+const BOX_BORDER = { top: THIN_BORDER, bottom: THIN_BORDER, left: THIN_BORDER, right: THIN_BORDER };
+
+function setCellStyle(ws, r, c, style) {
+  const ref = XLSX.utils.encode_cell({ r, c });
+  if (!ws[ref]) ws[ref] = { t: "s", v: "" };
+  ws[ref].s = { ...(ws[ref].s || {}), ...style };
+}
+
+function applyDataBorders(ws, startRow, endRow, startCol, endCol, leftAlignCols = []) {
+  for (let r = startRow; r <= endRow; r++) {
+    for (let c = startCol; c <= endCol; c++) {
+      setCellStyle(ws, r, c, {
+        border: BOX_BORDER,
+        alignment: {
+          horizontal: leftAlignCols.includes(c) ? "left" : "center",
+          vertical: "center",
+        },
+      });
+    }
+  }
 }
 
 // ── 출고분 / GMI 수출신고 엑셀 생성 ────────────────────────────────
@@ -1000,7 +1022,7 @@ document.getElementById("dhl-export-btn").addEventListener("click", async () => 
     return;
   }
 
-  targets = sortByReportOrder(targets); // DHL 리포트에 등장한 순서 그대로 정렬
+  targets = sortByOrderNumber(targets); // 주문번호 오름차순 정렬 (원본과 동일)
   originReviewTargets = targets;
 
   const skus = [...new Set(targets.flatMap((o) => o.lineItems.filter((li) => li.sku).map((li) => li.sku)))];
@@ -1103,6 +1125,15 @@ function exportChulgobon(orders) {
   ws["!merges"] = merges;
   ws["!cols"] = [{ wch: 10 }, { wch: 14 }, { wch: 6 }, { wch: 45 }, { wch: 6 }, { wch: 6 }];
 
+  // 헤더 배경색 (원본: FFFFCC)
+  for (let c = 0; c < 6; c++) {
+    setCellStyle(ws, 0, c, { fill: { fgColor: { rgb: "FFFFCC" } }, alignment: { horizontal: "center", vertical: "center" } });
+  }
+  // 데이터 영역 테두리 + 정렬 (Lineitem name 컬럼(3)만 좌측 정렬)
+  if (rows.length > 1) {
+    applyDataBorders(ws, 1, rows.length - 1, 0, 5, [3]);
+  }
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "출고분");
   const today = new Date();
@@ -1112,22 +1143,23 @@ function exportChulgobon(orders) {
 
 function exportGmi(orders, originMap) {
   const header = [
-    "AWB NO", "구매자", "목적국", "CT", "총중량", "수량", "단가", "금액", "총신고금액",
-    "신고품명", "HS CODE", "모델명(규격)", "인도조건", "화폐단위", "환급유무", "원산지",
-    "송품장번호", "거래구분", "사업자번호(수출자)", "사업자번호(제조자)",
+    "AWB NO", "구매자", "목적국", "CT\n(WB)", "총중량\n(WB)", "수량", "단가", "금액", "총신고금액\n(WB)",
+    "신고품명", "HS CODE\n(품목별)", "모델명\n(규격)", "인도조건", "화폐단위", "환급유무", "원산지",
+    "송품장번호", "거래구분", "사업자번호\n(수출자)", "사업자번호\n(제조자)",
   ];
   const rows = [
     ["■DHL 수출신고서 : GMI"],
-    ["수량", "", "개"],
+    ["수량 ", 0, "개"], // 0은 아래에서 실제 블록 수로 갱신
     header,
-    [],
   ];
   const merges = [{ s: { r: 0, c: 0 }, e: { r: 0, c: header.length - 1 } }]; // 제목행 전체 병합
+
+  let blockCount = 0;
 
   for (const order of orders) {
     const match = dhlReportMap[order.orderNumber];
     if (!match) continue;
-    const country = order.shippingAddress?.country || "";
+    const country = order.shippingAddress?.countryCodeV2 || "";
     const recipientName =
       match.shipto ||
       [order.shippingAddress?.firstName, order.shippingAddress?.lastName].filter(Boolean).join(" ");
@@ -1194,7 +1226,8 @@ function exportGmi(orders, originMap) {
     }
 
     const blockEndRow = rows.length - 1;
-    rows[blockStartRow][8] = blockTotal;
+    rows[blockStartRow][8] = Math.round(blockTotal * 100) / 100;
+    blockCount++;
 
     // 품목+배송비가 2줄 이상인 블록만 병합
     if (blockEndRow > blockStartRow) {
@@ -1205,6 +1238,8 @@ function exportGmi(orders, originMap) {
     }
   }
 
+  rows[1][1] = blockCount; // "수량" 행에 실제 처리된 주문 블록 수 반영
+
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!merges"] = merges;
   ws["!cols"] = [
@@ -1212,6 +1247,28 @@ function exportGmi(orders, originMap) {
     { wch: 10 }, { wch: 14 }, { wch: 13 }, { wch: 35 }, { wch: 7 }, { wch: 7 }, { wch: 7 }, { wch: 7 },
     { wch: 10 }, { wch: 7 }, { wch: 13 }, { wch: 13 },
   ];
+
+  // 제목행 스타일 (원본: 배경 D1D9F1, 폰트 12pt)
+  setCellStyle(ws, 0, 0, { fill: { fgColor: { rgb: "D1D9F1" } }, font: { sz: 12 } });
+
+  // 헤더 컬럼별 배경색 (원본 실측값)
+  const HEADER_COLORS = [
+    "FF99FF", "FF99FF", "FF99FF", "FFC000", "FFC000", "FF99FF", "FF99FF", "FF99FF",
+    "FFC000", "FFFF00", "FFFF00", "FF99FF", "FFFF00", "FFFF00", "FFFF00", "FFFF00",
+    "92D050", "FFFF00", "FFFF00", "92D050",
+  ];
+  HEADER_COLORS.forEach((color, c) => {
+    setCellStyle(ws, 2, c, {
+      fill: { fgColor: { rgb: color } },
+      font: { bold: true },
+      alignment: { horizontal: "center", vertical: "center", wrapText: true },
+    });
+  });
+
+  // 데이터 영역 테두리 + 정렬 (모델명(규격) 컬럼(11)만 좌측 정렬)
+  if (rows.length > 3) {
+    applyDataBorders(ws, 3, rows.length - 1, 0, 19, [11]);
+  }
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
