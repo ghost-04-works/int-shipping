@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-colwidth-offset-rowheight-fixed -->
+<!-- VERSION-MARKER: 2026-07-30-rowheight-hpx-bug-fixed-header-double -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -1154,7 +1154,7 @@ function exportChulgobon(orders) {
   }
 
   // 행 높이 (원본: 전체 15.95)
-  ws["!rows"] = rows.map(() => ({ hpt: 15.95, hpx: 21, customHeight: true }));
+  ws["!rows"] = rows.map(() => ({ hpt: 15.95, customHeight: true }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "출고분");
@@ -1305,7 +1305,11 @@ function exportGmi(orders, originMap) {
   }
 
   // 행 높이 (원본: 1~2행 17.25, 헤더부터 16.5)
-  ws["!rows"] = rows.map((_, idx) => ({ hpt: idx < 2 ? 17.25 : 16.5, hpx: idx < 2 ? 23 : 22, customHeight: true }));
+  ws["!rows"] = rows.map((_, idx) => {
+    if (idx < 2) return { hpt: 17.25, customHeight: true }; // 제목/수량행
+    if (idx === 2) return { hpt: 16.5 * 2, customHeight: true }; // 헤더행(원본은 2줄 병합이라 2배 높이로 근사)
+    return { hpt: 16.5, customHeight: true }; // 데이터행
+  });
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
