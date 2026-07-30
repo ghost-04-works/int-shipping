@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-exact-widths-titlerow-headerborder-fixed -->
+<!-- VERSION-MARKER: 2026-07-30-fontname-matched -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -1123,19 +1123,23 @@ function exportChulgobon(orders) {
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!merges"] = merges;
-  ws["!cols"] = [{ wch: 7.625 }, { wch: 11.625 }, { wch: 5.25 }, { wch: 90.875 }, { wch: 5.25 }, { wch: 5.25 }];
+  ws["!cols"] = [{ wch: 8.5 }, { wch: 13 }, { wch: 6 }, { wch: 98 }, { wch: 6 }, { wch: 6 }];
 
-  // 헤더 배경색 (원본: FFFFCC)
+  // 헤더 배경색 (원본: FFFFCC) + 폰트 12pt
   for (let c = 0; c < 6; c++) {
     setCellStyle(ws, 0, c, {
       fill: { fgColor: { rgb: "FFFFCC" } },
       border: BOX_BORDER,
+      font: { sz: 12, name: "맑은 고딕" },
       alignment: { horizontal: "center", vertical: "center" },
     });
   }
-  // 데이터 영역 테두리 + 정렬 (Lineitem name 컬럼(3)만 좌측 정렬)
+  // 데이터 영역 폰트 12pt + 테두리 + 정렬 (Lineitem name 컬럼(3)만 좌측 정렬)
   if (rows.length > 1) {
     applyDataBorders(ws, 1, rows.length - 1, 0, 5, [3]);
+    for (let r = 1; r < rows.length; r++) {
+      for (let c = 0; c < 6; c++) setCellStyle(ws, r, c, { font: { sz: 12, name: "맑은 고딕" } });
+    }
   }
 
   const wb = XLSX.utils.book_new();
@@ -1217,14 +1221,14 @@ function exportGmi(orders, originMap) {
         "SHIPPING FEE",
         "",
         "SHIPPING FEE",
-        "DAP",
-        "USD",
-        "Y",
-        "",
-        "",
-        15,
-        1304377108,
-        "미상",
+        "", // 인도조건 — 원본은 SHIPPING FEE 행에서 빈칸
+        "", // 화폐단위
+        "", // 환급유무
+        "", // 원산지
+        "", // 송품장번호
+        "", // 거래구분
+        "", // 사업자번호(수출자)
+        "", // 사업자번호(제조자)
       ]);
       firstRow = false;
     }
@@ -1255,7 +1259,7 @@ function exportGmi(orders, originMap) {
   // 제목행/수량행: 병합이 아니라 A~C 3칸만 개별적으로 같은 배경색(D1D9F1)+폰트12pt
   for (const r of [0, 1]) {
     for (let c = 0; c < 3; c++) {
-      setCellStyle(ws, r, c, { fill: { fgColor: { rgb: "D1D9F1" } }, font: { sz: 12 } });
+      setCellStyle(ws, r, c, { fill: { fgColor: { rgb: "D1D9F1" } }, font: { sz: 12, name: "맑은 고딕" } });
     }
   }
 
@@ -1269,14 +1273,17 @@ function exportGmi(orders, originMap) {
     setCellStyle(ws, 2, c, {
       fill: { fgColor: { rgb: color } },
       border: BOX_BORDER,
-      font: { bold: true },
+      font: { bold: true, sz: 10, name: "돋움" },
       alignment: { horizontal: "center", vertical: "center", wrapText: true },
     });
   });
 
-  // 데이터 영역 테두리 + 정렬 (모델명(규격) 컬럼(11)만 좌측 정렬)
+  // 데이터 영역 테두리 + 정렬 (신고품명(9), HS CODE(10), 모델명(규격)(11) 좌측 정렬)
   if (rows.length > 3) {
-    applyDataBorders(ws, 3, rows.length - 1, 0, 19, [11]);
+    applyDataBorders(ws, 3, rows.length - 1, 0, 19, [9, 10, 11]);
+    for (let r = 3; r < rows.length; r++) {
+      for (let c = 0; c < 20; c++) setCellStyle(ws, r, c, { font: { name: "맑은 고딕" } });
+    }
   }
 
   const wb = XLSX.utils.book_new();
