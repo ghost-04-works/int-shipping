@@ -176,6 +176,59 @@
     padding: 40px;
     color: var(--text-dim);
   }
+
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .modal-overlay.visible { display: flex; }
+  .modal-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    width: 420px;
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+  .modal-box h2 {
+    font-size: 15px;
+    margin: 0 0 16px;
+  }
+  .modal-box .field-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .modal-box .field {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .modal-box label {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .modal-box input[type="text"] {
+    width: 100%;
+  }
+  .modal-box .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .modal-box .modal-error {
+    color: var(--danger);
+    font-size: 12px;
+    margin-top: 8px;
+  }
 </style>
 </head>
 <body>
@@ -198,6 +251,7 @@
     <div class="tab active" data-tab="dhl">DHL 발송건 <span class="count" id="count-dhl">0</span></div>
     <div class="tab" data-tab="domestic">국내 배송건 <span class="count" id="count-domestic">0</span></div>
     <div class="tab" data-tab="groupbuy">Group Buy (제외됨) <span class="count" id="count-groupbuy">0</span></div>
+    <div class="tab" data-tab="processed">처리완료 조회</div>
   </div>
 
   <div class="toolbar">
@@ -210,6 +264,71 @@
   </div>
 </main>
 
+<div id="address-modal" class="modal-overlay">
+  <div class="modal-box">
+    <h2>배송 주소 수정 — <span id="modal-order-no"></span></h2>
+    <div class="field-row">
+      <div class="field">
+        <label>성</label>
+        <input type="text" id="f-lastName" />
+      </div>
+      <div class="field">
+        <label>이름</label>
+        <input type="text" id="f-firstName" />
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>회사 (선택)</label>
+        <input type="text" id="f-company" />
+      </div>
+      <div class="field">
+        <label>국가코드 (예: KR, US, JP)</label>
+        <input type="text" id="f-countryCode" maxlength="2" style="text-transform:uppercase;" />
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>우편번호</label>
+        <input type="text" id="f-zip" />
+      </div>
+      <div class="field">
+        <label>시/도 (주/현)</label>
+        <input type="text" id="f-province" />
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>도시/구</label>
+        <input type="text" id="f-city" />
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>주소</label>
+        <input type="text" id="f-address1" />
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>아파트, 동/호수 등 (선택)</label>
+        <input type="text" id="f-address2" />
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>전화</label>
+        <input type="text" id="f-phone" />
+      </div>
+    </div>
+    <div class="modal-error" id="modal-error"></div>
+    <div class="modal-actions">
+      <button id="modal-cancel">취소</button>
+      <button class="primary" id="modal-save">저장</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── 설정 ──────────────────────────────────────────────────────────
 const SUPABASE_FUNCTIONS_BASE = "https://yqpskohzmnfiymjrgdxj.supabase.co/functions/v1";
@@ -219,6 +338,8 @@ const ALLOWED_DOMAIN = "geon.works";
 const DEFAULT_WAREHOUSE_ID = 3; // 셀메이트 해외창고 id — 필요시 조정
 
 let allOrders = [];
+let processedOrders = [];
+let processedLoaded = false;
 let currentTab = "dhl";
 
 // ── 인증 ──────────────────────────────────────────────────────────
@@ -317,7 +438,44 @@ function classify(order) {
   return "dhl";
 }
 
+async function loadProcessedOrders() {
+  document.getElementById("table-container").innerHTML = '<div class="loading">처리완료 주문을 불러오는 중...</div>';
+  try {
+    processedOrders = await callFunction("shopify-orders", { action: "list", status: "fulfilled" });
+    processedLoaded = true;
+    render();
+  } catch (err) {
+    document.getElementById("table-container").innerHTML =
+      `<div class="empty-state">조회 실패: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
 function render() {
+  if (currentTab === "processed") {
+    const container = document.getElementById("table-container");
+    if (processedOrders.length === 0) {
+      container.innerHTML = '<div class="empty-state">최근 처리완료된 주문이 없습니다.</div>';
+      return;
+    }
+    const rows = processedOrders.map((o) => renderRow(o, "processed")).join("");
+    container.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>주문번호</th>
+            <th>배송방법</th>
+            <th>수령자 / 주소</th>
+            <th>품목 (SKU)</th>
+            <th>관세확인</th>
+            <th>상태</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+    return;
+  }
+
   const grouped = { dhl: [], domestic: [], groupbuy: [] };
   for (const o of allOrders) grouped[classify(o)].push(o);
 
@@ -355,6 +513,9 @@ function render() {
 }
 
 function badgeInfo(order, tab) {
+  if (tab === "processed") {
+    return { cls: "unknown", label: order.shippingMethod || "-" };
+  }
   const method = (order.shippingMethod || "").toUpperCase();
   const isExplicit = method.includes("DHL") || (order.shippingMethod || "").includes("국내");
   if (isExplicit) {
@@ -379,9 +540,13 @@ function renderRow(order, tab) {
     .join("<br>");
 
   const addr = order.shippingAddress || {};
-  const addrText = [addr.name, addr.address1, addr.address2, addr.city, addr.province, addr.country]
+  const recipientName = [addr.firstName, addr.lastName].filter(Boolean).join(" ");
+  const addrText = [recipientName, addr.address1, addr.address2, addr.city, addr.province, addr.country]
     .filter(Boolean)
     .join(", ");
+
+  const editBtnHtml =
+    tab === "processed" ? "" : `<div class="edit-btn" data-order-id="${order.id}">주소 수정</div>`;
 
   const noteHtml = order.note
     ? `<div class="note-badge" title="${escapeHtml(order.note)}">메모: ${escapeHtml(order.note.slice(0, 40))}</div>`
@@ -394,6 +559,8 @@ function renderRow(order, tab) {
         <button class="primary fulfill-btn" data-order-id="${order.id}">발송처리</button>
         <div class="status-msg" id="status-${cssId(order.id)}"></div>
       `
+      : tab === "processed"
+      ? `<span style="color:var(--text-dim); font-size:12px;">${escapeHtml(order.fulfillmentStatus || "처리완료")}</span>`
       : `<span style="color:var(--text-dim); font-size:12px;">DHL 리포트 업로드에서 일괄 처리</span>`;
 
   return `
@@ -407,7 +574,7 @@ function renderRow(order, tab) {
       <td>
         <div class="addr-box">
           ${escapeHtml(addrText)}
-          <div class="edit-btn" data-order-id="${order.id}">주소 수정</div>
+          ${editBtnHtml}
         </div>
       </td>
       <td><div class="items-list">${itemsHtml}</div></td>
@@ -500,26 +667,76 @@ async function handleDomesticFulfill(order) {
   }
 }
 
-// ── 주소 수정 (간단한 prompt 기반, 추후 모달로 개선 가능) ───────────
-async function handleAddressEdit(order) {
+// ── 주소 수정 (모달 기반) ─────────────────────────────────────────
+let addressEditOrder = null;
+
+function handleAddressEdit(order) {
+  addressEditOrder = order;
   const addr = order.shippingAddress || {};
-  const address1 = prompt("주소 1", addr.address1 || "");
-  if (address1 === null) return;
-  const city = prompt("도시", addr.city || "");
-  if (city === null) return;
+
+  document.getElementById("modal-order-no").textContent = order.orderNumber;
+  document.getElementById("f-lastName").value = addr.lastName || "";
+  document.getElementById("f-firstName").value = addr.firstName || "";
+  document.getElementById("f-company").value = addr.company || "";
+  document.getElementById("f-countryCode").value = addr.countryCodeV2 || "";
+  document.getElementById("f-zip").value = addr.zip || "";
+  document.getElementById("f-province").value = addr.province || "";
+  document.getElementById("f-city").value = addr.city || "";
+  document.getElementById("f-address1").value = addr.address1 || "";
+  document.getElementById("f-address2").value = addr.address2 || "";
+  document.getElementById("f-phone").value = addr.phone || "";
+  document.getElementById("modal-error").textContent = "";
+
+  document.getElementById("address-modal").classList.add("visible");
+}
+
+function closeAddressModal() {
+  document.getElementById("address-modal").classList.remove("visible");
+  addressEditOrder = null;
+}
+
+document.getElementById("modal-cancel").addEventListener("click", closeAddressModal);
+
+document.getElementById("modal-save").addEventListener("click", async () => {
+  if (!addressEditOrder) return;
+  const errorEl = document.getElementById("modal-error");
+  const saveBtn = document.getElementById("modal-save");
+
+  const address = {
+    lastName: document.getElementById("f-lastName").value.trim(),
+    firstName: document.getElementById("f-firstName").value.trim(),
+    company: document.getElementById("f-company").value.trim(),
+    countryCodeV2: document.getElementById("f-countryCode").value.trim().toUpperCase(),
+    zip: document.getElementById("f-zip").value.trim(),
+    province: document.getElementById("f-province").value.trim(),
+    city: document.getElementById("f-city").value.trim(),
+    address1: document.getElementById("f-address1").value.trim(),
+    address2: document.getElementById("f-address2").value.trim(),
+    phone: document.getElementById("f-phone").value.trim(),
+  };
+
+  if (!address.address1 || !address.city || !address.zip) {
+    errorEl.textContent = "주소, 도시, 우편번호는 필수입니다.";
+    return;
+  }
+
+  saveBtn.disabled = true;
+  errorEl.textContent = "";
 
   try {
     await callFunction("shopify-orders", {
       action: "updateAddress",
-      orderId: order.id,
-      address: { ...addr, address1, city },
+      orderId: addressEditOrder.id,
+      address,
     });
-    alert("주소가 수정되었습니다.");
+    closeAddressModal();
     loadOrders();
   } catch (err) {
-    alert("주소 수정 실패: " + err.message);
+    errorEl.textContent = "저장 실패: " + err.message;
+  } finally {
+    saveBtn.disabled = false;
   }
-}
+});
 
 // ── 탭 전환 / 새로고침 ───────────────────────────────────────────
 document.querySelectorAll(".tab").forEach((tab) => {
@@ -527,7 +744,11 @@ document.querySelectorAll(".tab").forEach((tab) => {
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     tab.classList.add("active");
     currentTab = tab.dataset.tab;
-    render();
+    if (currentTab === "processed" && !processedLoaded) {
+      loadProcessedOrders();
+    } else {
+      render();
+    }
   });
 });
 
