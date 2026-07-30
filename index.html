@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-rowheights-qty-highlight-fixed -->
+<!-- VERSION-MARKER: 2026-07-30-colwidth-offset-rowheight-fixed -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -1125,32 +1125,36 @@ function exportChulgobon(orders) {
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!merges"] = merges;
-  ws["!cols"] = [{ wch: 8.5 }, { wch: 13 }, { wch: 6 }, { wch: 98 }, { wch: 6 }, { wch: 6 }];
+  const W2 = 0.83203125;
+  ws["!cols"] = [
+    { wch: 7.625 - W2 }, { wch: 11.625 - W2 }, { wch: 5.25 - W2 },
+    { wch: 90.875 - W2 }, { wch: 5.25 - W2 }, { wch: 5.25 - W2 },
+  ];
 
-  // 헤더 배경색 (원본: FFFFCC) + 폰트 12pt
+  // 헤더 배경색 (원본: FFFFCC) + 폰트 11pt (원본과 동일)
   for (let c = 0; c < 6; c++) {
     setCellStyle(ws, 0, c, {
       fill: { fgColor: { rgb: "FFFFCC" } },
       border: BOX_BORDER,
-      font: { sz: 12, name: "맑은 고딕" },
+      font: { sz: 11, name: "맑은 고딕" },
       alignment: { horizontal: "center", vertical: "center" },
     });
   }
-  // 데이터 영역 폰트 12pt + 테두리 + 정렬 (Lineitem name 컬럼(3)만 좌측 정렬)
+  // 데이터 영역 폰트 11pt(원본과 동일) + 테두리 + 정렬 (Lineitem name 컬럼(3)만 좌측 정렬)
   if (rows.length > 1) {
     applyDataBorders(ws, 1, rows.length - 1, 0, 5, [3]);
     for (let r = 1; r < rows.length; r++) {
-      for (let c = 0; c < 6; c++) setCellStyle(ws, r, c, { font: { sz: 12, name: "맑은 고딕" } });
+      for (let c = 0; c < 6; c++) setCellStyle(ws, r, c, { font: { sz: 11, name: "맑은 고딕" } });
     }
   }
 
   // 수량 > 1인 셀: 노란 배경 + 빨간 글씨 (원본 확인된 강조 규칙)
   for (const r of highlightQtyRows) {
-    setCellStyle(ws, r, 4, { fill: { fgColor: { rgb: "FFFF00" } }, font: { sz: 12, name: "맑은 고딕", color: { rgb: "FF0000" } } });
+    setCellStyle(ws, r, 4, { fill: { fgColor: { rgb: "FFFF00" } }, font: { sz: 11, name: "맑은 고딕", color: { rgb: "FF0000" } } });
   }
 
   // 행 높이 (원본: 전체 15.95)
-  ws["!rows"] = rows.map(() => ({ hpt: 15.95 }));
+  ws["!rows"] = rows.map(() => ({ hpt: 15.95, hpx: 21, customHeight: true }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "출고분");
@@ -1260,10 +1264,14 @@ function exportGmi(orders, originMap) {
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!merges"] = merges;
+  // 라이브러리가 wch->실제폭 변환 시 일정하게 +0.83203125 를 더하는 현상이 확인되어
+  // 목표값에서 미리 빼서 보정함
+  const W = 0.83203125;
   ws["!cols"] = [
-    { wch: 22.375 }, { wch: 27.75 }, { wch: 6.75 }, { wch: 8.25 }, { wch: 7.5 }, { wch: 6.25 }, { wch: 7.375 }, { wch: 13 },
-    { wch: 11.25 }, { wch: 17.375 }, { wch: 12.75 }, { wch: 65.125 }, { wch: 8.625 }, { wch: 13 }, { wch: 13 }, { wch: 6.75 },
-    { wch: 14.625 }, { wch: 8.625 }, { wch: 13 }, { wch: 10.375 },
+    { wch: 22.375 - W }, { wch: 27.75 - W }, { wch: 6.75 - W }, { wch: 8.25 - W }, { wch: 7.5 - W },
+    { wch: 6.25 - W }, { wch: 7.375 - W }, { wch: 13 - W }, { wch: 11.25 - W }, { wch: 17.375 - W },
+    { wch: 12.75 - W }, { wch: 65.125 - W }, { wch: 8.625 - W }, { wch: 13 - W }, { wch: 13 - W },
+    { wch: 6.75 - W }, { wch: 14.625 - W }, { wch: 8.625 - W }, { wch: 13 - W }, { wch: 10.375 - W },
   ];
 
   // 제목행/수량행: 병합이 아니라 A~C 3칸만 개별적으로 같은 배경색(D1D9F1)+폰트12pt
@@ -1297,7 +1305,7 @@ function exportGmi(orders, originMap) {
   }
 
   // 행 높이 (원본: 1~2행 17.25, 헤더부터 16.5)
-  ws["!rows"] = rows.map((_, idx) => ({ hpt: idx < 2 ? 17.25 : 16.5 }));
+  ws["!rows"] = rows.map((_, idx) => ({ hpt: idx < 2 ? 17.25 : 16.5, hpx: idx < 2 ? 23 : 22, customHeight: true }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
