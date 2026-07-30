@@ -504,7 +504,9 @@ async function loadProcessedOrders() {
 }
 
 function render() {
-  document.getElementById("dhl-toolbar").style.display = currentTab === "dhl" ? "flex" : "none";
+  const showDhlToolbar = currentTab === "dhl" || currentTab === "processed";
+  document.getElementById("dhl-toolbar").style.display = showDhlToolbar ? "flex" : "none";
+  document.getElementById("dhl-process-btn").style.display = currentTab === "dhl" ? "inline-block" : "none";
 
   if (currentTab === "processed") {
     const container = document.getElementById("table-container");
@@ -517,6 +519,7 @@ function render() {
       <table>
         <thead>
           <tr>
+            <th></th>
             <th>주문번호</th>
             <th>배송방법</th>
             <th>수령자 / 주소</th>
@@ -528,6 +531,7 @@ function render() {
         <tbody>${rows}</tbody>
       </table>
     `;
+    bindDhlCheckboxes();
     return;
   }
 
@@ -624,7 +628,7 @@ function renderRow(order, tab) {
       : `<span style="color:var(--text-dim); font-size:12px;">DHL 리포트 업로드에서 일괄 처리</span>`;
 
   const checkboxCell =
-    tab === "dhl"
+    tab === "dhl" || tab === "processed"
       ? `<td><input type="checkbox" class="dhl-select" data-order-id="${order.id}" ${
           selectedDhlOrderIds.has(order.id) ? "checked" : ""
         } /></td>`
@@ -963,9 +967,8 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
 let originReviewTargets = [];
 
 document.getElementById("dhl-export-btn").addEventListener("click", async () => {
-  const targets = allOrders.filter(
-    (o) => classify(o) === "dhl" && selectedDhlOrderIds.has(o.id)
-  );
+  const sourceList = currentTab === "processed" ? processedOrders : allOrders.filter((o) => classify(o) === "dhl");
+  const targets = sourceList.filter((o) => selectedDhlOrderIds.has(o.id));
   if (targets.length === 0) {
     alert("엑셀로 생성할 주문을 먼저 체크박스로 선택해주세요.");
     return;
@@ -1059,8 +1062,9 @@ function exportChulgobon(orders) {
 
 function exportGmi(orders, originMap) {
   const header = [
-    "AWB NO", "구매자", "목적국", "CT", "총중량", "수량", "단가", "금액",
+    "AWB NO", "구매자", "목적국", "CT", "총중량", "수량", "단가", "금액", "총신고금액",
     "신고품명", "HS CODE", "모델명(규격)", "인도조건", "화폐단위", "환급유무", "원산지",
+    "송품장번호", "거래구분", "사업자번호(수출자)", "사업자번호(제조자)",
   ];
   const rows = [header];
 
@@ -1072,33 +1076,68 @@ function exportGmi(orders, originMap) {
       match.shipto ||
       [order.shippingAddress?.firstName, order.shippingAddress?.lastName].filter(Boolean).join(" ");
 
-    for (const li of order.lineItems) {
-      if (!li.sku) continue; // SKU 없는 라인은 스킵 (원산지 조회 불가)
+    const itemLines = order.lineItems.filter((li) => li.sku);
+    let blockTotal = 0;
+    let firstRow = true;
+
+    for (const li of itemLines) {
+      const amount = (li.price || 0) * li.quantity;
+      blockTotal += amount;
       rows.push([
-        match.tracking || "",
-        recipientName.toUpperCase(),
-        country,
-        match.ct || "1",
-        match.weight || "",
+        firstRow ? match.tracking || "" : "",
+        firstRow ? recipientName.toUpperCase() : "",
+        firstRow ? country : "",
+        firstRow ? match.ct || "1" : "",
+        firstRow ? match.weight || "" : "",
         li.quantity,
-        "", // 단가 — Shopify 라인 price 미조회 (필요 시 추가 가능)
-        "",
-        li.title,
+        li.price || "",
+        amount || "",
+        "", // 총신고금액은 블록 마지막에 채움
+        "KEYBOARD PARTS",
         "8473.30-9000",
         li.title,
         "DAP",
         "USD",
         "Y",
         originMap[li.sku] || "",
+        "", // 송품장번호
+        15, // 거래구분 (고정값)
+        1304377108, // 사업자번호(수출자) (고정값)
+        "미상", // 사업자번호(제조자) (고정값)
       ]);
+      firstRow = false;
     }
+
     if (match.freight && parseFloat(match.freight) > 0) {
+      const shippingAmount = parseFloat(match.freight);
+      blockTotal += shippingAmount;
       rows.push([
-        match.tracking || "", recipientName.toUpperCase(), country, match.ct || "1",
-        match.weight || "", 1, match.freight, match.freight,
-        "SHIPPING FEE", "", "SHIPPING FEE", "DAP", "USD", "Y", "",
+        firstRow ? match.tracking || "" : "",
+        firstRow ? recipientName.toUpperCase() : "",
+        firstRow ? country : "",
+        firstRow ? match.ct || "1" : "",
+        firstRow ? match.weight || "" : "",
+        1,
+        shippingAmount,
+        shippingAmount,
+        "",
+        "SHIPPING FEE",
+        "",
+        "SHIPPING FEE",
+        "DAP",
+        "USD",
+        "Y",
+        "",
+        "",
+        15,
+        1304377108,
+        "미상",
       ]);
     }
+
+    // 총신고금액은 이 오더 블록의 첫 데이터 행에 기입 (원본은 병합+수식이었으나 여기선 단순 합산값)
+    const blockStartIdx = rows.length - itemLines.length - (match.freight && parseFloat(match.freight) > 0 ? 1 : 0);
+    if (rows[blockStartIdx]) rows[blockStartIdx][8] = blockTotal;
   }
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
