@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-dhl-fulfill-removed-stock-only -->
+<!-- VERSION-MARKER: 2026-07-30-dhl-tab-review-only -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -506,7 +506,9 @@ async function loadProcessedOrders() {
 }
 
 function render() {
-  const showDhlToolbar = currentTab === "dhl" || currentTab === "processed";
+  // DHL 리포트는 라벨 출력 시점에 해당 주문이 이미 Shopify 발송완료로 넘어가버리므로
+  // "DHL 발송건"(미발송) 탭에서는 리포트 매칭이 구조적으로 불가능함 — "처리완료" 탭에서만 노출
+  const showDhlToolbar = currentTab === "processed";
   document.getElementById("dhl-toolbar").style.display = showDhlToolbar ? "flex" : "none";
   document.getElementById("dhl-process-btn").style.display = showDhlToolbar ? "inline-block" : "none";
 
@@ -626,7 +628,7 @@ function renderRow(order, tab) {
       : tab === "processed"
       ? `<span style="color:var(--text-dim); font-size:12px;">${escapeHtml(order.fulfillmentStatus || "처리완료")}</span>`
       : tab === "dhl"
-      ? renderDhlMatchStatus(order)
+      ? `<span style="color:var(--text-dim); font-size:12px;">DHL 사이트에서 라벨 출력 후 "처리완료" 탭에서 재고차감</span>`
       : `<span style="color:var(--text-dim); font-size:12px;">DHL 리포트 업로드에서 일괄 처리</span>`;
 
   const checkboxCell =
@@ -921,7 +923,9 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
     const match = dhlReportMap[order.orderNumber];
     const statusEl = document.getElementById(`status-${cssId(order.id)}`);
 
-    if (!match || !match.tracking) {
+    // "DHL 발송건" 탭(아직 미발송)은 리포트 매칭이 실제 발송 여부의 유일한 증거라 필수.
+    // "처리완료" 탭은 이미 Shopify에서 발송완료로 확인된 주문이라 리포트 없이도 진행 가능.
+    if (currentTab === "dhl" && (!match || !match.tracking)) {
       skippedCount++;
       if (statusEl) {
         statusEl.textContent = "DHL 리포트에 매칭되는 송장 없음 — 스킵";
@@ -948,7 +952,7 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
           action: "deduct",
           warehouseId: DEFAULT_WAREHOUSE_ID,
           items: skuItems,
-          note: `Shopify ${order.orderNumber} (DHL)`,
+          note: `Shopify ${order.orderNumber}${match?.tracking ? ` (DHL ${match.tracking})` : " (DHL)"}`,
           orderId: order.id,
           orderNumber: order.orderNumber,
         });
