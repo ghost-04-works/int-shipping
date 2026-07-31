@@ -386,6 +386,28 @@
   </div>
 </div>
 
+<div id="stock-confirm-modal" class="modal-overlay">
+  <div class="modal-box origin-modal-box">
+    <h2>재고차감 확인 — 선택된 <span id="stock-confirm-count">0</span>건</h2>
+    <p style="font-size:12px; color:var(--text-dim); margin-top:-8px;">
+      아래 목록대로 셀메이트 재고가 차감됩니다. 주문 변경 등으로 품목/수량이 예상과 다른 건이 없는지 확인해주세요.
+    </p>
+    <div style="max-height:50vh; overflow-y:auto;">
+      <table class="origin-table">
+        <thead>
+          <tr><th>주문번호</th><th>품목</th><th>SKU</th><th>수량</th></tr>
+        </thead>
+        <tbody id="stock-confirm-table-body"></tbody>
+      </table>
+    </div>
+    <div class="modal-error" id="stock-confirm-modal-error"></div>
+    <div class="modal-actions">
+      <button id="stock-confirm-cancel">취소</button>
+      <button class="primary" id="stock-confirm-proceed">확인, 재고차감 진행</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── 설정 ──────────────────────────────────────────────────────────
 const SUPABASE_FUNCTIONS_BASE = "https://yqpskohzmnfiymjrgdxj.supabase.co/functions/v1";
@@ -516,7 +538,10 @@ function render() {
   const showDhlToolbar = currentTab === "processed";
   document.getElementById("dhl-toolbar").style.display = showDhlToolbar ? "flex" : "none";
   document.getElementById("dhl-process-btn").style.display = showDhlToolbar ? "inline-block" : "none";
-  document.getElementById("dhl-label-toolbar").style.display = currentTab === "dhl" ? "flex" : "none";
+  // Group Buy로 분류돼 기본 발송 대상에서는 제외되지만, 가끔 그 중 일부를 DHL로
+  // 발송해야 하는 경우가 있어 "라벨 자동 출력"을 Group Buy 탭에서도 쓸 수 있게 함
+  document.getElementById("dhl-label-toolbar").style.display =
+    currentTab === "dhl" || currentTab === "groupbuy" ? "flex" : "none";
 
   if (currentTab === "processed") {
     const container = document.getElementById("table-container");
@@ -560,7 +585,7 @@ function render() {
     return;
   }
 
-  const checkboxHeader = currentTab === "dhl" ? "<th></th>" : "";
+  const checkboxHeader = currentTab === "dhl" || currentTab === "groupbuy" ? "<th></th>" : "";
   const rows = list.map((o) => renderRow(o, currentTab)).join("");
   container.innerHTML = `
     <table>
@@ -581,7 +606,7 @@ function render() {
 
   // 이벤트 바인딩
   list.forEach((o) => bindRowEvents(o));
-  if (currentTab === "dhl") bindDhlCheckboxes();
+  if (currentTab === "dhl" || currentTab === "groupbuy") bindDhlCheckboxes();
 }
 
 function badgeInfo(order, tab) {
@@ -638,7 +663,7 @@ function renderRow(order, tab) {
       : `<span style="color:var(--text-dim); font-size:12px;">DHL 리포트 업로드에서 일괄 처리</span>`;
 
   const checkboxCell =
-    tab === "dhl" || tab === "processed"
+    tab === "dhl" || tab === "groupbuy" || tab === "processed"
       ? `<td><input type="checkbox" class="dhl-select" data-order-id="${order.id}" ${
           selectedDhlOrderIds.has(order.id) ? "checked" : ""
         } /></td>`
@@ -862,7 +887,10 @@ let dhlAutomateTimeoutId = null;
 document.getElementById("dhl-label-print-btn").addEventListener("click", () => {
   const statusEl = document.getElementById("dhl-label-status");
   const btn = document.getElementById("dhl-label-print-btn");
-  const targets = allOrders.filter((o) => classify(o) === "dhl" && selectedDhlOrderIds.has(o.id));
+  // Group Buy 탭에서도 이 버튼을 쓸 수 있어서, dhl/groupbuy 두 분류 모두에서 선택된 걸 모은다
+  const targets = allOrders.filter(
+    (o) => (classify(o) === "dhl" || classify(o) === "groupbuy") && selectedDhlOrderIds.has(o.id)
+  );
 
   if (targets.length === 0) {
     statusEl.style.color = "var(--danger)";
@@ -1053,7 +1081,12 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
 });
 
 // ── 선택 주문 일괄 발송처리 + 재고차감 ─────────────────────────────
-document.getElementById("dhl-process-btn").addEventListener("click", async () => {
+// 실제 재고가 바뀌는 동작이라, 바로 실행하지 않고 어떤 주문의 어떤 품목이 몇 개
+// 차감될지 미리 보여주는 확인 모달을 먼저 띄운다(주문 변경 등으로 예상과 다른 건이
+// 있는지 검토할 수 있도록).
+let stockConfirmTargets = [];
+
+document.getElementById("dhl-process-btn").addEventListener("click", () => {
   const logEl = document.getElementById("dhl-log");
   const sourceList = currentTab === "processed" ? processedOrders : allOrders.filter((o) => classify(o) === "dhl");
   const targets = sourceList.filter((o) => selectedDhlOrderIds.has(o.id));
@@ -1063,6 +1096,68 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
     return;
   }
 
+  openStockConfirmModal(targets);
+});
+
+function openStockConfirmModal(targets) {
+  stockConfirmTargets = targets;
+  document.getElementById("stock-confirm-count").textContent = targets.length;
+
+  const rowsHtml = [];
+  for (const order of targets) {
+    const match = dhlReportMap[order.orderNumber];
+    const willSkip = currentTab === "dhl" && (!match || !match.tracking);
+    if (willSkip) {
+      rowsHtml.push(`
+        <tr class="missing">
+          <td>${escapeHtml(order.orderNumber)}</td>
+          <td colspan="3" style="color:var(--danger);">DHL 리포트 미매칭 — 재고차감 스킵 예정</td>
+        </tr>
+      `);
+      continue;
+    }
+
+    const skuItems = order.lineItems.filter((li) => li.sku);
+    if (skuItems.length === 0) {
+      rowsHtml.push(`
+        <tr>
+          <td>${escapeHtml(order.orderNumber)}</td>
+          <td colspan="3" style="color:var(--text-dim);">SKU 있는 품목 없음 — 차감 대상 아님</td>
+        </tr>
+      `);
+      continue;
+    }
+    skuItems.forEach((li, idx) => {
+      rowsHtml.push(`
+        <tr>
+          <td>${idx === 0 ? escapeHtml(order.orderNumber) : ""}</td>
+          <td>${escapeHtml(li.title)}</td>
+          <td>${escapeHtml(li.sku)}</td>
+          <td>${li.quantity}</td>
+        </tr>
+      `);
+    });
+  }
+
+  document.getElementById("stock-confirm-table-body").innerHTML = rowsHtml.join("");
+  document.getElementById("stock-confirm-modal-error").textContent = "";
+  document.getElementById("stock-confirm-modal").classList.add("visible");
+}
+
+document.getElementById("stock-confirm-cancel").addEventListener("click", () => {
+  document.getElementById("stock-confirm-modal").classList.remove("visible");
+  stockConfirmTargets = [];
+});
+
+document.getElementById("stock-confirm-proceed").addEventListener("click", async () => {
+  document.getElementById("stock-confirm-modal").classList.remove("visible");
+  const targets = stockConfirmTargets;
+  stockConfirmTargets = [];
+  await performStockDeduction(targets);
+});
+
+async function performStockDeduction(targets) {
+  const logEl = document.getElementById("dhl-log");
   logEl.innerHTML = `처리 시작: 총 ${targets.length}건`;
 
   let successCount = 0;
@@ -1131,7 +1226,7 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
   logEl.innerHTML =
     `처리 완료 — 성공 ${successCount}건 / 스킵 ${skippedCount}건 / 실패 ${failedCount}건` +
     (skippedCount > 0 ? ` <span style="color:var(--danger);">(스킵된 건은 DHL 리포트 업로드 여부를 확인하세요)</span>` : "");
-});
+}
 
 function sortByOrderNumber(orders) {
   const parseNo = (orderNumber) => {
