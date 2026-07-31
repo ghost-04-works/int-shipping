@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-chulgobon-d-col-width-adjusted -->
+<!-- VERSION-MARKER: 2026-07-30-duplicate-prevention-added -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -738,6 +738,8 @@ async function handleDomesticFulfill(order) {
         warehouseId: DEFAULT_WAREHOUSE_ID,
         items: skuItems,
         note: `Shopify ${order.orderNumber}`,
+        orderId: order.id,
+        orderNumber: order.orderNumber,
       });
     }
 
@@ -955,6 +957,8 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
           warehouseId: DEFAULT_WAREHOUSE_ID,
           items: skuItems,
           note: `Shopify ${order.orderNumber} (DHL)`,
+          orderId: order.id,
+          orderNumber: order.orderNumber,
         });
       }
 
