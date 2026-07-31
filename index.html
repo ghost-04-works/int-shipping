@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VERSION-MARKER: 2026-07-30-duplicate-prevention-added -->
+<!-- VERSION-MARKER: 2026-07-30-dhl-fulfill-removed-stock-only -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
@@ -284,7 +284,7 @@
     <label style="font-size:12px; color:var(--text-dim);">DHL 리포트 업로드:</label>
     <input type="file" id="dhl-report-input" accept=".xlsx" />
     <span id="dhl-report-status" style="font-size:12px; color:var(--text-dim);"></span>
-    <button id="dhl-process-btn" class="primary">선택 주문 발송처리+재고차감</button>
+    <button id="dhl-process-btn" class="primary">선택 주문 재고차감</button>
     <button id="dhl-export-btn">출고분/GMI 엑셀 생성</button>
   </div>
   <div id="dhl-log" style="font-size:12px; margin-bottom:10px;"></div>
@@ -508,7 +508,7 @@ async function loadProcessedOrders() {
 function render() {
   const showDhlToolbar = currentTab === "dhl" || currentTab === "processed";
   document.getElementById("dhl-toolbar").style.display = showDhlToolbar ? "flex" : "none";
-  document.getElementById("dhl-process-btn").style.display = currentTab === "dhl" ? "inline-block" : "none";
+  document.getElementById("dhl-process-btn").style.display = showDhlToolbar ? "inline-block" : "none";
 
   if (currentTab === "processed") {
     const container = document.getElementById("table-container");
@@ -903,9 +903,8 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
 // ── 선택 주문 일괄 발송처리 + 재고차감 ─────────────────────────────
 document.getElementById("dhl-process-btn").addEventListener("click", async () => {
   const logEl = document.getElementById("dhl-log");
-  const targets = allOrders.filter(
-    (o) => classify(o) === "dhl" && selectedDhlOrderIds.has(o.id)
-  );
+  const sourceList = currentTab === "processed" ? processedOrders : allOrders.filter((o) => classify(o) === "dhl");
+  const targets = sourceList.filter((o) => selectedDhlOrderIds.has(o.id));
 
   if (targets.length === 0) {
     logEl.innerHTML = '<span style="color:var(--danger);">선택된 주문이 없습니다.</span>';
@@ -914,20 +913,18 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
 
   logEl.innerHTML = `처리 시작: 총 ${targets.length}건`;
 
+  let successCount = 0;
+  let skippedCount = 0;
+  let failedCount = 0;
+
   for (const order of targets) {
     const match = dhlReportMap[order.orderNumber];
     const statusEl = document.getElementById(`status-${cssId(order.id)}`);
 
     if (!match || !match.tracking) {
+      skippedCount++;
       if (statusEl) {
         statusEl.textContent = "DHL 리포트에 매칭되는 송장 없음 — 스킵";
-        statusEl.className = "status-msg err";
-      }
-      continue;
-    }
-    if (!order.fulfillmentOrderIds || order.fulfillmentOrderIds.length === 0) {
-      if (statusEl) {
-        statusEl.textContent = "fulfillment order 없음 — 스킵";
         statusEl.className = "status-msg err";
       }
       continue;
@@ -939,13 +936,8 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
     }
 
     try {
-      await callFunction("shopify-orders", {
-        action: "fulfill",
-        fulfillmentOrderId: order.fulfillmentOrderIds[0],
-        trackingNumber: match.tracking,
-        carrier: "DHL Express",
-      });
-
+      // Shopify 발송처리는 DHL Express Commerce가 라벨 출력 시점에 자체적으로 이미 처리하므로
+      // 여기서는 셀메이트 재고차감만 수행함
       const skuItems = order.lineItems
         .filter((li) => li.sku)
         .map((li) => ({ sku: li.sku, quantity: li.quantity }));
@@ -963,16 +955,18 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
       }
 
       const unmatched = deductResult?.unmatchedSkus || [];
+      successCount++;
       if (statusEl) {
         if (unmatched.length > 0) {
-          statusEl.textContent = `발송처리 완료. ⚠ SKU 매칭 실패: ${unmatched.join(", ")}`;
+          statusEl.textContent = `재고차감 완료. ⚠ SKU 매칭 실패: ${unmatched.join(", ")}`;
           statusEl.className = "status-msg err";
         } else {
-          statusEl.textContent = "발송처리 + 재고차감 완료";
+          statusEl.textContent = "재고차감 완료";
           statusEl.className = "status-msg ok";
         }
       }
     } catch (err) {
+      failedCount++;
       if (statusEl) {
         statusEl.textContent = "실패: " + err.message;
         statusEl.className = "status-msg err";
@@ -980,8 +974,9 @@ document.getElementById("dhl-process-btn").addEventListener("click", async () =>
     }
   }
 
-  logEl.innerHTML = `처리 완료: 총 ${targets.length}건 (개별 결과는 표 안 각 행에서 확인)`;
-  setTimeout(() => loadOrders(), 2000);
+  logEl.innerHTML =
+    `처리 완료 — 성공 ${successCount}건 / 스킵 ${skippedCount}건 / 실패 ${failedCount}건` +
+    (skippedCount > 0 ? ` <span style="color:var(--danger);">(스킵된 건은 DHL 리포트 업로드 여부를 확인하세요)</span>` : "");
 });
 
 function sortByOrderNumber(orders) {
