@@ -897,9 +897,15 @@ window.addEventListener("message", (event) => {
   if (msg.type === "DHL_AUTOMATE_PROGRESS") {
     statusEl.style.color = "var(--text-dim)";
     if (msg.phase === "orders") {
-      statusEl.textContent = msg.labelsTriggered
-        ? "라벨 출력 요청 완료. 리포트 페이지로 이동합니다..."
-        : `주문 체크 중: ${msg.checked}/${msg.total}`;
+      if (msg.labelsTriggered) {
+        statusEl.textContent =
+          msg.labelDownloadConfirmed === false
+            ? "라벨 다운로드 신호를 확인하지 못했습니다 (PDF가 안 받아졌을 수 있음, 'Printed' 탭에서 직접 확인 권장). 리포트 페이지로 이동합니다..."
+            : "라벨 PDF 다운로드 확인. 리포트 페이지로 이동합니다...";
+        if (msg.labelDownloadConfirmed === false) statusEl.style.color = "var(--dhl)";
+      } else {
+        statusEl.textContent = `주문 체크 중: ${msg.checked}/${msg.total}`;
+      }
     } else if (msg.phase === "reports") {
       statusEl.textContent = `리포트 준비 대기 중... (${msg.attempt}/${msg.maxAttempts}) ${msg.status || ""}`;
     }
