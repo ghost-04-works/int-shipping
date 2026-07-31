@@ -280,6 +280,11 @@
     <span id="last-updated" style="font-size:12px; color:var(--text-dim);"></span>
   </div>
 
+  <div id="dhl-label-toolbar" class="toolbar" style="display:none;">
+    <button id="dhl-label-print-btn" class="primary">라벨 자동 출력</button>
+    <span id="dhl-label-status" style="font-size:12px; color:var(--text-dim);"></span>
+  </div>
+
   <div id="dhl-toolbar" class="toolbar" style="display:none; flex-wrap:wrap;">
     <label style="font-size:12px; color:var(--text-dim);">DHL 리포트 업로드:</label>
     <input type="file" id="dhl-report-input" accept=".xlsx" />
@@ -511,6 +516,7 @@ function render() {
   const showDhlToolbar = currentTab === "processed";
   document.getElementById("dhl-toolbar").style.display = showDhlToolbar ? "flex" : "none";
   document.getElementById("dhl-process-btn").style.display = showDhlToolbar ? "inline-block" : "none";
+  document.getElementById("dhl-label-toolbar").style.display = currentTab === "dhl" ? "flex" : "none";
 
   if (currentTab === "processed") {
     const container = document.getElementById("table-container");
@@ -849,6 +855,65 @@ document.querySelectorAll(".tab").forEach((tab) => {
 });
 
 document.getElementById("refresh-btn").addEventListener("click", loadOrders);
+
+// ── DHL 라벨 자동 출력 (크롬 확장 연동) ─────────────────────────────
+let dhlAutomateTimeoutId = null;
+
+document.getElementById("dhl-label-print-btn").addEventListener("click", () => {
+  const statusEl = document.getElementById("dhl-label-status");
+  const btn = document.getElementById("dhl-label-print-btn");
+  const targets = allOrders.filter((o) => classify(o) === "dhl" && selectedDhlOrderIds.has(o.id));
+
+  if (targets.length === 0) {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = "체크박스로 주문을 먼저 선택해주세요.";
+    return;
+  }
+
+  const orderNumbers = targets.map((o) => o.orderNumber);
+  btn.disabled = true;
+  statusEl.style.color = "var(--text-dim)";
+  statusEl.textContent = `확장 프로그램에 ${orderNumbers.length}건 전달 중...`;
+
+  clearTimeout(dhlAutomateTimeoutId);
+  dhlAutomateTimeoutId = setTimeout(() => {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = "확장 프로그램 응답이 없습니다. 설치·활성화 여부를 확인해주세요.";
+    btn.disabled = false;
+  }, 8000);
+
+  window.postMessage({ type: "DHL_AUTOMATE", orderNumbers }, "*");
+});
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  const msg = event.data;
+  if (!msg || typeof msg.type !== "string" || !msg.type.startsWith("DHL_AUTOMATE")) return;
+
+  clearTimeout(dhlAutomateTimeoutId);
+  const statusEl = document.getElementById("dhl-label-status");
+  const btn = document.getElementById("dhl-label-print-btn");
+
+  if (msg.type === "DHL_AUTOMATE_PROGRESS") {
+    statusEl.style.color = "var(--text-dim)";
+    if (msg.phase === "orders") {
+      statusEl.textContent = msg.labelsTriggered
+        ? "라벨 출력 요청 완료. 리포트 페이지로 이동합니다..."
+        : `주문 체크 중: ${msg.checked}/${msg.total}`;
+    } else if (msg.phase === "reports") {
+      statusEl.textContent = `리포트 준비 대기 중... (${msg.attempt}/${msg.maxAttempts}) ${msg.status || ""}`;
+    }
+  } else if (msg.type === "DHL_AUTOMATE_DONE") {
+    statusEl.style.color = "var(--domestic)";
+    statusEl.textContent = "완료: 라벨 출력 + 리포트 다운로드까지 끝났습니다. 다운로드된 xlsx는 '처리완료' 탭에서 업로드해주세요.";
+    btn.disabled = false;
+    setTimeout(() => loadOrders(), 1500);
+  } else if (msg.type === "DHL_AUTOMATE_ERROR") {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = `오류 (${msg.phase || "?"}): ${msg.error}`;
+    btn.disabled = false;
+  }
+});
 
 // ── DHL 리포트 업로드 및 파싱 ──────────────────────────────────────
 document.getElementById("dhl-report-input").addEventListener("change", async (e) => {
