@@ -390,12 +390,13 @@
   <div class="modal-box origin-modal-box">
     <h2>재고차감 확인 — 선택된 <span id="stock-confirm-count">0</span>건</h2>
     <p style="font-size:12px; color:var(--text-dim); margin-top:-8px;">
-      아래 목록대로 셀메이트 재고가 차감됩니다. 주문 변경 등으로 품목/수량이 예상과 다른 건이 없는지 확인해주세요.
+      아래 목록대로 셀메이트 재고가 차감됩니다. 빨간 테두리는 셀메이트에 없는 SKU라 직접 고쳐야 합니다
+      (비우면 그 품목은 차감에서 제외). 주문 변경 등으로 품목/수량이 예상과 다른 건이 없는지도 확인해주세요.
     </p>
     <div style="max-height:50vh; overflow-y:auto;">
       <table class="origin-table">
         <thead>
-          <tr><th>주문번호</th><th>품목</th><th>SKU</th><th>수량</th></tr>
+          <tr><th>주문번호</th><th>품목</th><th>셀메이트 SKU</th><th>수량</th></tr>
         </thead>
         <tbody id="stock-confirm-table-body"></tbody>
       </table>
@@ -1099,9 +1100,32 @@ document.getElementById("dhl-process-btn").addEventListener("click", () => {
   openStockConfirmModal(targets);
 });
 
-function openStockConfirmModal(targets) {
+// 차감 대상 품목 하나를 가리키는 고유 키. SKU가 있으면 SKU, 없으면 주문건+순번 조합
+// (원산지 확인 모달의 originKey와 동일한 방식 — 여기서는 "이 라인이 어떤 셀메이트
+// SKU로 차감될지" 매핑용 키로 재사용).
+function stockLineKey(order, li, idx) {
+  return li.sku || `__nosku__${order.id}__${idx}`;
+}
+
+async function openStockConfirmModal(targets) {
   stockConfirmTargets = targets;
   document.getElementById("stock-confirm-count").textContent = targets.length;
+  document.getElementById("stock-confirm-modal-error").textContent = "";
+
+  // 차감 대상이 될 수 있는(=스킵 예정이 아닌) 주문들의 SKU를 모아 셀메이트에 실제
+  // 존재하는지 미리 조회 — 여기 없는 SKU는 매칭 실패로 간주해 직접 고칠 수 있게 한다.
+  const nonSkipOrders = targets.filter((order) => {
+    const match = dhlReportMap[order.orderNumber];
+    return !(currentTab === "dhl" && (!match || !match.tracking));
+  });
+  const skus = [...new Set(nonSkipOrders.flatMap((o) => o.lineItems.filter((li) => li.sku).map((li) => li.sku)))];
+  let lookup = {};
+  try {
+    if (skus.length > 0) lookup = await callFunction("sellmate-stock", { action: "lookupProducts", skus });
+  } catch (err) {
+    document.getElementById("stock-confirm-modal-error").textContent =
+      "셀메이트 상품 조회 실패: " + err.message + " — 매칭 확인 없이 표시합니다. SKU를 직접 확인해주세요.";
+  }
 
   const rowsHtml = [];
   for (const order of targets) {
@@ -1117,22 +1141,19 @@ function openStockConfirmModal(targets) {
       continue;
     }
 
-    const skuItems = order.lineItems.filter((li) => li.sku);
-    if (skuItems.length === 0) {
+    order.lineItems.forEach((li, idx) => {
+      const key = stockLineKey(order, li, idx);
+      const matched = li.sku && lookup[li.sku];
       rowsHtml.push(`
-        <tr>
-          <td>${escapeHtml(order.orderNumber)}</td>
-          <td colspan="3" style="color:var(--text-dim);">SKU 있는 품목 없음 — 차감 대상 아님</td>
-        </tr>
-      `);
-      continue;
-    }
-    skuItems.forEach((li, idx) => {
-      rowsHtml.push(`
-        <tr>
+        <tr class="${matched ? "" : "missing"}" data-key="${escapeHtml(key)}">
           <td>${idx === 0 ? escapeHtml(order.orderNumber) : ""}</td>
           <td>${escapeHtml(li.title)}</td>
-          <td>${escapeHtml(li.sku)}</td>
+          <td>
+            <input type="text" class="stock-override-input" data-key="${escapeHtml(key)}"
+              value="${escapeHtml(li.sku || "")}" placeholder="셀메이트 SKU (비우면 차감 제외)"
+              style="width:150px; text-transform:none;" />
+            ${matched ? "" : `<div style="font-size:11px; color:var(--danger); margin-top:2px;">셀메이트에 없는 SKU — 실제 SKU로 고쳐주세요</div>`}
+          </td>
           <td>${li.quantity}</td>
         </tr>
       `);
@@ -1140,7 +1161,6 @@ function openStockConfirmModal(targets) {
   }
 
   document.getElementById("stock-confirm-table-body").innerHTML = rowsHtml.join("");
-  document.getElementById("stock-confirm-modal-error").textContent = "";
   document.getElementById("stock-confirm-modal").classList.add("visible");
 }
 
@@ -1150,13 +1170,46 @@ document.getElementById("stock-confirm-cancel").addEventListener("click", () => 
 });
 
 document.getElementById("stock-confirm-proceed").addEventListener("click", async () => {
+  const errorEl = document.getElementById("stock-confirm-modal-error");
+  const proceedBtn = document.getElementById("stock-confirm-proceed");
+
+  // 입력창에 현재 채워진 값을 오버라이드 맵으로 수집 (빈 값이면 그 품목은 차감 제외)
+  const overrideMap = new Map();
+  document.querySelectorAll(".stock-override-input").forEach((input) => {
+    const val = input.value.trim();
+    if (val) overrideMap.set(input.dataset.key, val);
+  });
+
+  // 사용자가 입력/수정한 SKU들이 실제 셀메이트에 존재하는지 마지막으로 한 번 더 검증
+  const skusToVerify = [...new Set(overrideMap.values())];
+  errorEl.textContent = "";
+  proceedBtn.disabled = true;
+  proceedBtn.textContent = "확인 중...";
+  try {
+    const lookup =
+      skusToVerify.length > 0
+        ? await callFunction("sellmate-stock", { action: "lookupProducts", skus: skusToVerify })
+        : {};
+    const stillMissing = skusToVerify.filter((sku) => !lookup[sku]);
+    if (stillMissing.length > 0) {
+      errorEl.textContent = `셀메이트에 없는 SKU입니다: ${stillMissing.join(", ")}`;
+      return;
+    }
+  } catch (err) {
+    errorEl.textContent = "SKU 검증 실패: " + err.message;
+    return;
+  } finally {
+    proceedBtn.disabled = false;
+    proceedBtn.textContent = "확인, 재고차감 진행";
+  }
+
   document.getElementById("stock-confirm-modal").classList.remove("visible");
   const targets = stockConfirmTargets;
   stockConfirmTargets = [];
-  await performStockDeduction(targets);
+  await performStockDeduction(targets, overrideMap);
 });
 
-async function performStockDeduction(targets) {
+async function performStockDeduction(targets, overrideMap = new Map()) {
   const logEl = document.getElementById("dhl-log");
   logEl.innerHTML = `처리 시작: 총 ${targets.length}건`;
 
@@ -1186,10 +1239,14 @@ async function performStockDeduction(targets) {
 
     try {
       // Shopify 발송처리는 DHL Express Commerce가 라벨 출력 시점에 자체적으로 이미 처리하므로
-      // 여기서는 셀메이트 재고차감만 수행함
-      const skuItems = order.lineItems
-        .filter((li) => li.sku)
-        .map((li) => ({ sku: li.sku, quantity: li.quantity }));
+      // 여기서는 셀메이트 재고차감만 수행함. 재고차감 확인 모달에서 사용자가 고친 SKU가
+      // 있으면 그걸 우선 사용하고(overrideMap), 없으면 원래 Shopify SKU를 그대로 쓴다.
+      const skuItems = [];
+      order.lineItems.forEach((li, idx) => {
+        const key = stockLineKey(order, li, idx);
+        const resolvedSku = overrideMap.get(key) || li.sku;
+        if (resolvedSku) skuItems.push({ sku: resolvedSku, quantity: li.quantity });
+      });
 
       let deductResult = null;
       if (skuItems.length > 0) {
