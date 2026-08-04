@@ -583,7 +583,7 @@ function render() {
       <table>
         <thead>
           <tr>
-            <th></th>
+            <th><input type="checkbox" id="select-all-checkbox" title="전체 선택/해제" /></th>
             <th>주문번호</th>
             <th>배송방법</th>
             <th>수령자 / 주소</th>
@@ -596,6 +596,7 @@ function render() {
       </table>
     `;
     bindDhlCheckboxes();
+    bindSelectAllCheckbox(processedOrders);
     return;
   }
 
@@ -614,7 +615,10 @@ function render() {
     return;
   }
 
-  const checkboxHeader = currentTab === "dhl" || currentTab === "groupbuy" ? "<th></th>" : "";
+  const checkboxHeader =
+    currentTab === "dhl" || currentTab === "groupbuy"
+      ? `<th><input type="checkbox" id="select-all-checkbox" title="전체 선택/해제" /></th>`
+      : "";
   const rows = list.map((o) => renderRow(o, currentTab)).join("");
   container.innerHTML = `
     <table>
@@ -635,7 +639,10 @@ function render() {
 
   // 이벤트 바인딩
   list.forEach((o) => bindRowEvents(o));
-  if (currentTab === "dhl" || currentTab === "groupbuy") bindDhlCheckboxes();
+  if (currentTab === "dhl" || currentTab === "groupbuy") {
+    bindDhlCheckboxes();
+    bindSelectAllCheckbox(list);
+  }
 }
 
 function badgeInfo(order, tab) {
@@ -752,6 +759,27 @@ function bindDhlCheckboxes() {
       if (cb.checked) selectedDhlOrderIds.add(id);
       else selectedDhlOrderIds.delete(id);
     });
+  });
+}
+
+// 헤더의 전체선택 체크박스 — 현재 탭에 보이는 주문들만 대상으로 한다.
+// 일부만 선택된 상태면 indeterminate(가로줄) 표시로 "일부만 선택됨"을 알려준다.
+function bindSelectAllCheckbox(orders) {
+  const checkbox = document.getElementById("select-all-checkbox");
+  if (!checkbox) return;
+
+  const total = orders.length;
+  const selectedCount = orders.filter((o) => selectedDhlOrderIds.has(o.id)).length;
+  checkbox.checked = total > 0 && selectedCount === total;
+  checkbox.indeterminate = selectedCount > 0 && selectedCount < total;
+
+  checkbox.addEventListener("change", () => {
+    if (checkbox.checked) {
+      orders.forEach((o) => selectedDhlOrderIds.add(o.id));
+    } else {
+      orders.forEach((o) => selectedDhlOrderIds.delete(o.id));
+    }
+    render();
   });
 }
 
