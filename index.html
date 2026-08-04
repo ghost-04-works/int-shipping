@@ -409,6 +409,18 @@
   </div>
 </div>
 
+<div id="product-search-modal" class="modal-overlay">
+  <div class="modal-box">
+    <h2>셀메이트 상품 검색</h2>
+    <input type="text" id="product-search-input" placeholder="품목명 또는 SKU 일부 입력" style="width:100%;" />
+    <div id="product-search-results" style="max-height:300px; overflow-y:auto; margin-top:10px;"></div>
+    <div class="modal-error" id="product-search-error"></div>
+    <div class="modal-actions">
+      <button id="product-search-cancel">닫기</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── 설정 ──────────────────────────────────────────────────────────
 const SUPABASE_FUNCTIONS_BASE = "https://yqpskohzmnfiymjrgdxj.supabase.co/functions/v1";
@@ -420,6 +432,7 @@ const DEFAULT_WAREHOUSE_ID = 3; // 셀메이트 해외창고 id — 필요시 �
 let allOrders = [];
 let processedOrders = [];
 let processedLoaded = false;
+let processedShipmentMap = {}; // orderId -> { orderNumber, warehouseId, processedAt } (재고차감된 건만)
 let currentTab = "dhl";
 let dhlReportMap = {}; // orderNumber -> { tracking, shipto, weight, freight, ct, country }
 let dhlReportOrderSequence = []; // 리포트 파일에 등장한 순서 그대로의 주문번호 목록
@@ -526,10 +539,24 @@ async function loadProcessedOrders() {
   try {
     processedOrders = await callFunction("shopify-orders", { action: "list", status: "fulfilled" });
     processedLoaded = true;
+    await loadProcessedShipmentStatus();
     render();
   } catch (err) {
     document.getElementById("table-container").innerHTML =
       `<div class="empty-state">조회 실패: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// 각 주문이 이미 재고차감 처리됐는지(= processed_shipments에 기록됐는지) 일괄 조회.
+// 실패해도 화면 자체는 그대로 보여주고 상태 배지만 안 뜨게 한다(치명적이지 않음).
+async function loadProcessedShipmentStatus() {
+  processedShipmentMap = {};
+  const orderIds = processedOrders.map((o) => o.id);
+  if (orderIds.length === 0) return;
+  try {
+    processedShipmentMap = await callFunction("sellmate-stock", { action: "checkProcessed", orderIds });
+  } catch (err) {
+    console.error("재고차감 상태 조회 실패:", err);
   }
 }
 
@@ -658,7 +685,7 @@ function renderRow(order, tab) {
         <div class="status-msg" id="status-${cssId(order.id)}"></div>
       `
       : tab === "processed"
-      ? `<span style="color:var(--text-dim); font-size:12px;">${escapeHtml(order.fulfillmentStatus || "처리완료")}</span>`
+      ? renderProcessedStatus(order)
       : tab === "dhl"
       ? `<span style="color:var(--text-dim); font-size:12px;">DHL 사이트에서 라벨 출력 후 "처리완료" 탭에서 재고차감</span>`
       : `<span style="color:var(--text-dim); font-size:12px;">DHL 리포트 업로드에서 일괄 처리</span>`;
@@ -689,6 +716,23 @@ function renderRow(order, tab) {
       <td style="text-align:center;"><input type="checkbox" class="customs-check" /></td>
       <td>${fulfillControls}</td>
     </tr>
+  `;
+}
+
+// "처리완료" 탭에서 발송 상태 + 재고차감(셀메이트) 반영 여부를 함께 보여준다.
+// processedShipmentMap은 processed_shipments 테이블 조회 결과 — 있으면 이미 차감된 것.
+function renderProcessedStatus(order) {
+  const fulfillLabel = escapeHtml(order.fulfillmentStatus || "처리완료");
+  const shipment = processedShipmentMap[order.id];
+  const stockLine = shipment
+    ? `<span style="color:var(--domestic);">✓ 재고차감 완료${
+        shipment.processedAt ? " · " + new Date(shipment.processedAt).toLocaleDateString("ko-KR") : ""
+      }</span>`
+    : `<span style="color:var(--text-dim);">재고차감 안 됨</span>`;
+  return `
+    <div style="font-size:12px;">${fulfillLabel}</div>
+    <div style="font-size:12px; margin-top:4px;">${stockLine}</div>
+    <div class="status-msg" id="status-${cssId(order.id)}"></div>
   `;
 }
 
@@ -1149,10 +1193,18 @@ async function openStockConfirmModal(targets) {
           <td>${idx === 0 ? escapeHtml(order.orderNumber) : ""}</td>
           <td>${escapeHtml(li.title)}</td>
           <td>
-            <input type="text" class="stock-override-input" data-key="${escapeHtml(key)}"
-              value="${escapeHtml(li.sku || "")}" placeholder="셀메이트 SKU (비우면 차감 제외)"
-              style="width:150px; text-transform:none;" />
-            ${matched ? "" : `<div style="font-size:11px; color:var(--danger); margin-top:2px;">셀메이트에 없는 SKU — 실제 SKU로 고쳐주세요</div>`}
+            <div style="display:flex; align-items:center; gap:6px;">
+              <input type="text" class="stock-override-input" data-key="${escapeHtml(key)}"
+                value="${escapeHtml(li.sku || "")}" placeholder="셀메이트 SKU (비우면 차감 제외)"
+                style="width:150px; text-transform:none;" />
+              ${
+                matched
+                  ? ""
+                  : `<button type="button" class="sku-search-btn" data-key="${escapeHtml(key)}"
+                       style="padding:5px 8px; font-size:11px;">검색</button>`
+              }
+            </div>
+            ${matched ? "" : `<div style="font-size:11px; color:var(--danger); margin-top:2px;">셀메이트에 없는 SKU — 직접 고치거나 "검색"으로 찾아주세요</div>`}
           </td>
           <td>${li.quantity}</td>
         </tr>
@@ -1162,6 +1214,88 @@ async function openStockConfirmModal(targets) {
 
   document.getElementById("stock-confirm-table-body").innerHTML = rowsHtml.join("");
   document.getElementById("stock-confirm-modal").classList.add("visible");
+
+  document.querySelectorAll(".sku-search-btn").forEach((btn) => {
+    btn.addEventListener("click", () => openProductSearchModal(btn.dataset.key));
+  });
+}
+
+// ── SKU 모를 때 품목명/SKU로 검색해서 채워넣기 ──────────────────────
+let productSearchTargetKey = null;
+let productSearchDebounceId = null;
+
+function openProductSearchModal(key) {
+  productSearchTargetKey = key;
+  document.getElementById("product-search-input").value = "";
+  document.getElementById("product-search-results").innerHTML = "";
+  document.getElementById("product-search-error").textContent = "";
+  document.getElementById("product-search-modal").classList.add("visible");
+  document.getElementById("product-search-input").focus();
+}
+
+document.getElementById("product-search-cancel").addEventListener("click", () => {
+  document.getElementById("product-search-modal").classList.remove("visible");
+  productSearchTargetKey = null;
+});
+
+document.getElementById("product-search-input").addEventListener("input", (e) => {
+  clearTimeout(productSearchDebounceId);
+  const query = e.target.value.trim();
+  const resultsEl = document.getElementById("product-search-results");
+  if (query.length < 2) {
+    resultsEl.innerHTML = "";
+    return;
+  }
+  productSearchDebounceId = setTimeout(() => runProductSearch(query), 300);
+});
+
+async function runProductSearch(query) {
+  const resultsEl = document.getElementById("product-search-results");
+  const errorEl = document.getElementById("product-search-error");
+  resultsEl.innerHTML = '<div style="color:var(--text-dim); font-size:12px;">검색 중...</div>';
+  errorEl.textContent = "";
+
+  try {
+    const results = await callFunction("sellmate-stock", { action: "searchProducts", query });
+    if (results.length === 0) {
+      resultsEl.innerHTML = '<div style="color:var(--text-dim); font-size:12px;">검색 결과가 없습니다.</div>';
+      return;
+    }
+    resultsEl.innerHTML = results
+      .map(
+        (p) => `
+        <div class="product-search-result" data-sku="${escapeHtml(p.skuCode)}"
+          style="padding:8px; border-bottom:1px solid var(--border); cursor:pointer;">
+          <div style="font-weight:600;">${escapeHtml(p.productName || "(품목명 없음)")}</div>
+          <div style="font-size:11px; color:var(--text-dim); font-family:var(--mono);">${escapeHtml(p.skuCode)}</div>
+        </div>
+      `
+      )
+      .join("");
+    resultsEl.querySelectorAll(".product-search-result").forEach((row) => {
+      row.addEventListener("mouseenter", () => (row.style.background = "var(--panel-2)"));
+      row.addEventListener("mouseleave", () => (row.style.background = ""));
+      row.addEventListener("click", () => applyProductSearchResult(row.dataset.sku));
+    });
+  } catch (err) {
+    errorEl.textContent = "검색 실패: " + err.message;
+    resultsEl.innerHTML = "";
+  }
+}
+
+function applyProductSearchResult(sku) {
+  if (productSearchTargetKey) {
+    const input = document.querySelector(
+      `.stock-override-input[data-key="${cssAttr(productSearchTargetKey)}"]`
+    );
+    if (input) {
+      input.value = sku;
+      const row = input.closest("tr");
+      if (row) row.classList.remove("missing"); // 검색으로 골랐으니 매칭된 것으로 간주해 표시만 정리
+    }
+  }
+  document.getElementById("product-search-modal").classList.remove("visible");
+  productSearchTargetKey = null;
 }
 
 document.getElementById("stock-confirm-cancel").addEventListener("click", () => {
@@ -1283,6 +1417,12 @@ async function performStockDeduction(targets, overrideMap = new Map()) {
   logEl.innerHTML =
     `처리 완료 — 성공 ${successCount}건 / 스킵 ${skippedCount}건 / 실패 ${failedCount}건` +
     (skippedCount > 0 ? ` <span style="color:var(--danger);">(스킵된 건은 DHL 리포트 업로드 여부를 확인하세요)</span>` : "");
+
+  // 방금 차감된 건이 있으면 "처리완료" 탭의 재고차감 상태 배지도 최신 상태로 갱신
+  if (successCount > 0 && currentTab === "processed") {
+    await loadProcessedShipmentStatus();
+    render();
+  }
 }
 
 function sortByOrderNumber(orders) {
