@@ -294,6 +294,12 @@
   </div>
   <div id="dhl-log" style="font-size:12px; margin-bottom:10px;"></div>
 
+  <div id="processed-search-toolbar" class="toolbar" style="display:none;">
+    <input type="text" id="processed-search-input" placeholder="주문번호로 검색 (예: 28123)" style="width:220px;" />
+    <button id="processed-search-clear" style="display:none;">전체 목록 보기</button>
+    <span id="processed-search-count" style="font-size:12px; color:var(--text-dim);"></span>
+  </div>
+
   <div id="table-container">
     <div class="loading">로그인 후 주문을 불러옵니다...</div>
   </div>
@@ -433,6 +439,9 @@ const DEFAULT_WAREHOUSE_ID = 3; // 셀메이트 해외창고 id — 필요시 �
 let allOrders = [];
 let processedOrders = [];
 let processedLoaded = false;
+let processedCursor = null; // 다음 페이지를 이어서 가져오기 위한 Shopify 커서
+let processedHasMore = false; // 더 가져올 처리완료 주문이 남아있는지
+let processedSearchResults = null; // null이면 검색 안 하는 중, 배열이면 검색 결과 표시 중
 let processedShipmentMap = {}; // orderId -> { orderNumber, warehouseId, processedAt } (재고차감된 건만)
 let currentTab = "dhl";
 let dhlReportMap = {}; // orderNumber -> { tracking, shipto, weight, freight, ct, country }
@@ -535,12 +544,31 @@ function classify(order) {
   return "dhl";
 }
 
-async function loadProcessedOrders() {
-  document.getElementById("table-container").innerHTML = '<div class="loading">처리완료 주문을 불러오는 중...</div>';
+// "처리완료" 탭에서 지금 화면에 보이는 목록 — 검색 중이면 검색 결과, 아니면 로드된 전체 목록.
+// 검색으로 찾은(=processedOrders에는 없는) 주문도 체크해서 재고차감/엑셀생성 대상에 포함시키려면
+// 이 함수를 기준으로 소스 목록을 잡아야 한다(processedOrders만 보면 검색 결과가 빠짐).
+function getProcessedDisplayList() {
+  return processedSearchResults ?? processedOrders;
+}
+
+// append:true면 다음 페이지를 이어서 가져와 뒤에 붙인다("더 보기" 버튼용).
+// 처리완료 주문은 계속 쌓이기만 해서 서버가 한 번에 최대 250건씩 끊어 주므로,
+// 그 이상 보려면 이 함수를 커서를 이어받아 다시 호출해야 한다.
+async function loadProcessedOrders({ append = false } = {}) {
+  if (!append) {
+    document.getElementById("table-container").innerHTML = '<div class="loading">처리완료 주문을 불러오는 중...</div>';
+  }
   try {
-    processedOrders = await callFunction("shopify-orders", { action: "list", status: "fulfilled" });
+    const result = await callFunction("shopify-orders", {
+      action: "list",
+      status: "fulfilled",
+      cursor: append ? processedCursor : null,
+    });
+    processedOrders = append ? [...processedOrders, ...result.orders] : result.orders;
+    processedCursor = result.nextCursor;
+    processedHasMore = result.hasMore;
     processedLoaded = true;
-    await loadProcessedShipmentStatus();
+    await loadProcessedShipmentStatus(processedOrders);
     render();
   } catch (err) {
     document.getElementById("table-container").innerHTML =
@@ -548,16 +576,39 @@ async function loadProcessedOrders() {
   }
 }
 
-// 각 주문이 이미 재고차감 처리됐는지(= processed_shipments에 기록됐는지) 일괄 조회.
+// 주어진 주문들이 이미 재고차감 처리됐는지(= processed_shipments에 기록됐는지) 일괄 조회.
 // 실패해도 화면 자체는 그대로 보여주고 상태 배지만 안 뜨게 한다(치명적이지 않음).
-async function loadProcessedShipmentStatus() {
-  processedShipmentMap = {};
-  const orderIds = processedOrders.map((o) => o.id);
+// 기존에 알고 있던 상태는 지우지 않고 덧붙인다 — "더 보기"/검색으로 일부만 다시 조회해도
+// 이미 확인했던 다른 주문들의 배지가 사라지지 않게 하기 위함.
+async function loadProcessedShipmentStatus(orders) {
+  const orderIds = orders.map((o) => o.id);
   if (orderIds.length === 0) return;
   try {
-    processedShipmentMap = await callFunction("sellmate-stock", { action: "checkProcessed", orderIds });
+    const result = await callFunction("sellmate-stock", { action: "checkProcessed", orderIds });
+    processedShipmentMap = { ...processedShipmentMap, ...result };
   } catch (err) {
     console.error("재고차감 상태 조회 실패:", err);
+  }
+}
+
+// 주문번호로 검색 — 페이지네이션과 무관하게 과거 주문도 바로 찾을 수 있다.
+let processedSearchDebounceId = null;
+
+async function runProcessedSearch(query) {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    processedSearchResults = null;
+    render();
+    return;
+  }
+  try {
+    const results = await callFunction("shopify-orders", { action: "search", query: trimmed, status: "fulfilled" });
+    processedSearchResults = results;
+    await loadProcessedShipmentStatus(results);
+    render();
+  } catch (err) {
+    document.getElementById("table-container").innerHTML =
+      `<div class="empty-state">검색 실패: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -571,14 +622,30 @@ function render() {
   // 발송해야 하는 경우가 있어 "라벨 자동 출력"을 Group Buy 탭에서도 쓸 수 있게 함
   document.getElementById("dhl-label-toolbar").style.display =
     currentTab === "dhl" || currentTab === "groupbuy" ? "flex" : "none";
+  document.getElementById("processed-search-toolbar").style.display =
+    currentTab === "processed" ? "flex" : "none";
 
   if (currentTab === "processed") {
     const container = document.getElementById("table-container");
-    if (processedOrders.length === 0) {
-      container.innerHTML = '<div class="empty-state">최근 처리완료된 주문이 없습니다.</div>';
+    const isSearching = processedSearchResults !== null;
+    const displayList = getProcessedDisplayList();
+
+    document.getElementById("processed-search-clear").style.display = isSearching ? "inline-block" : "none";
+    document.getElementById("processed-search-count").textContent = isSearching
+      ? `검색 결과 ${displayList.length}건`
+      : "";
+
+    if (displayList.length === 0) {
+      container.innerHTML = isSearching
+        ? '<div class="empty-state">검색 결과가 없습니다.</div>'
+        : '<div class="empty-state">최근 처리완료된 주문이 없습니다.</div>';
       return;
     }
-    const rows = processedOrders.map((o) => renderRow(o, "processed")).join("");
+    const rows = displayList.map((o) => renderRow(o, "processed")).join("");
+    const loadMoreHtml =
+      !isSearching && processedHasMore
+        ? `<div style="text-align:center; padding:14px;"><button id="processed-load-more-btn">더 보기</button></div>`
+        : "";
     container.innerHTML = `
       <table>
         <thead>
@@ -594,9 +661,15 @@ function render() {
         </thead>
         <tbody>${rows}</tbody>
       </table>
+      ${loadMoreHtml}
     `;
     bindDhlCheckboxes();
-    bindSelectAllCheckbox(processedOrders);
+    bindSelectAllCheckbox(displayList);
+    if (!isSearching && processedHasMore) {
+      document.getElementById("processed-load-more-btn").addEventListener("click", () => {
+        loadProcessedOrders({ append: true });
+      });
+    }
     return;
   }
 
@@ -955,6 +1028,19 @@ document.querySelectorAll(".tab").forEach((tab) => {
 
 document.getElementById("refresh-btn").addEventListener("click", loadOrders);
 
+// "처리완료 조회" 탭의 주문번호 검색. 입력창 자체는 render()가 다시 그리는 #table-container
+// 밖의 고정 위치에 있어서, 검색 결과가 갱신돼도 입력 중이던 포커스가 끊기지 않는다.
+document.getElementById("processed-search-input").addEventListener("input", (e) => {
+  clearTimeout(processedSearchDebounceId);
+  processedSearchDebounceId = setTimeout(() => runProcessedSearch(e.target.value), 300);
+});
+
+document.getElementById("processed-search-clear").addEventListener("click", () => {
+  document.getElementById("processed-search-input").value = "";
+  processedSearchResults = null;
+  render();
+});
+
 // ── DHL 라벨 자동 출력 (크롬 확장 연동) ─────────────────────────────
 let dhlAutomateTimeoutId = null;
 
@@ -1138,7 +1224,7 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
 
     // 리포트에 있는 주문번호들을 자동으로 체크 선택
     const reportOrderNumbers = new Set(Object.keys(dhlReportMap));
-    const candidateList = currentTab === "processed" ? processedOrders : allOrders;
+    const candidateList = currentTab === "processed" ? getProcessedDisplayList() : allOrders;
     let autoSelectedCount = 0;
     for (const order of candidateList) {
       if (reportOrderNumbers.has(order.orderNumber)) {
@@ -1162,7 +1248,7 @@ let stockConfirmTargets = [];
 
 document.getElementById("dhl-process-btn").addEventListener("click", () => {
   const logEl = document.getElementById("dhl-log");
-  const sourceList = currentTab === "processed" ? processedOrders : allOrders.filter((o) => classify(o) === "dhl");
+  const sourceList = currentTab === "processed" ? getProcessedDisplayList() : allOrders.filter((o) => classify(o) === "dhl");
   const targets = sourceList.filter((o) => selectedDhlOrderIds.has(o.id));
 
   if (targets.length === 0) {
@@ -1517,7 +1603,7 @@ function applyDataBorders(ws, startRow, endRow, startCol, endCol, leftAlignCols 
 let originReviewTargets = [];
 
 document.getElementById("dhl-export-btn").addEventListener("click", async () => {
-  const sourceList = currentTab === "processed" ? processedOrders : allOrders.filter((o) => classify(o) === "dhl");
+  const sourceList = currentTab === "processed" ? getProcessedDisplayList() : allOrders.filter((o) => classify(o) === "dhl");
   let targets = sourceList.filter((o) => selectedDhlOrderIds.has(o.id));
   if (targets.length === 0) {
     alert("엑셀로 생성할 주문을 먼저 체크박스로 선택해주세요.");
