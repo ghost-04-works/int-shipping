@@ -291,6 +291,7 @@
     <span id="dhl-report-status" style="font-size:12px; color:var(--text-dim);"></span>
     <button id="dhl-process-btn" class="primary">선택 주문 재고차감</button>
     <button id="dhl-export-btn">출고분/GMI 엑셀 생성</button>
+    <button id="manual-deduct-open-btn">수동 재고차감</button>
   </div>
   <div id="dhl-log" style="font-size:12px; margin-bottom:10px;"></div>
 
@@ -411,6 +412,35 @@
     <div class="modal-actions">
       <button id="stock-confirm-cancel">취소</button>
       <button class="primary" id="stock-confirm-proceed">확인, 재고차감 진행</button>
+    </div>
+  </div>
+</div>
+
+<div id="manual-deduct-modal" class="modal-overlay">
+  <div class="modal-box" style="width:600px;">
+    <h2>수동 재고차감</h2>
+    <div id="manual-deduct-context" style="font-size:12px; color:var(--text-dim); background:var(--panel-2); border-radius:6px; padding:8px 10px; margin-bottom:12px;"></div>
+    <div class="field-row">
+      <div class="field" style="flex:2;">
+        <label>품목 (검색으로 선택)</label>
+        <div style="display:flex; gap:6px;">
+          <input type="text" id="manual-deduct-sku-display" readonly placeholder="검색 버튼으로 품목을 선택하세요" style="flex:1; width:auto;" />
+          <button type="button" id="manual-deduct-search-btn">검색</button>
+        </div>
+      </div>
+      <div class="field" style="flex:1;">
+        <label>수량</label>
+        <input type="number" id="manual-deduct-qty" min="1" step="1" value="1" style="width:100%;" />
+      </div>
+    </div>
+    <div class="field">
+      <label>셀메이트 작업 메모</label>
+      <input type="text" id="manual-deduct-note" style="width:100%;" />
+    </div>
+    <div class="modal-error" id="manual-deduct-error"></div>
+    <div class="modal-actions">
+      <button id="manual-deduct-cancel">취소</button>
+      <button class="primary" id="manual-deduct-confirm">재고차감 실행</button>
     </div>
   </div>
 </div>
@@ -665,6 +695,7 @@ function render() {
     `;
     bindDhlCheckboxes();
     bindSelectAllCheckbox(displayList);
+    bindManualDeductButtons(displayList);
     if (!isSearching && processedHasMore) {
       document.getElementById("processed-load-more-btn").addEventListener("click", () => {
         loadProcessedOrders({ append: true });
@@ -809,7 +840,9 @@ function renderProcessedStatus(order) {
     ? `<span style="color:var(--domestic);">✓ 재고차감 완료${
         shipment.processedAt ? " · " + new Date(shipment.processedAt).toLocaleDateString("ko-KR") : ""
       }</span>`
-    : `<span style="color:var(--text-dim);">재고차감 안 됨</span>`;
+    : `<span style="color:var(--text-dim);">재고차감 안 됨</span>
+       <button type="button" class="manual-deduct-btn" data-order-id="${order.id}"
+         style="margin-left:6px; padding:2px 6px; font-size:11px;">수동차감</button>`;
   return `
     <div style="font-size:12px;">${fulfillLabel}</div>
     <div style="font-size:12px; margin-top:4px;">${stockLine}</div>
@@ -853,6 +886,14 @@ function bindSelectAllCheckbox(orders) {
       orders.forEach((o) => selectedDhlOrderIds.delete(o.id));
     }
     render();
+  });
+}
+
+// "처리완료" 탭 각 행의 "수동차감" 버튼 — 그 주문 컨텍스트로 수동 재고차감 모달을 연다.
+function bindManualDeductButtons(orders) {
+  document.querySelectorAll(".manual-deduct-btn").forEach((btn) => {
+    const order = orders.find((o) => o.id === btn.dataset.orderId);
+    if (order) btn.addEventListener("click", () => openManualDeductModal(order));
   });
 }
 
@@ -1320,7 +1361,11 @@ async function openStockConfirmModal(targets) {
                        style="padding:5px 8px; font-size:11px;">검색</button>`
               }
             </div>
-            ${matched ? "" : `<div style="font-size:11px; color:var(--danger); margin-top:2px;">셀메이트에 없는 SKU — 직접 고치거나 "검색"으로 찾아주세요</div>`}
+            ${
+              matched
+                ? ""
+                : `<div class="sku-match-msg" data-key="${escapeHtml(key)}" style="font-size:11px; color:var(--danger); margin-top:2px;">셀메이트에 없는 SKU — 직접 고치거나 "검색"으로 찾아주세요</div>`
+            }
           </td>
           <td>${li.quantity}</td>
         </tr>
@@ -1342,15 +1387,22 @@ async function openStockConfirmModal(targets) {
 let productSearchTargetKey = null;
 let productSearchDebounceId = null;
 
+const MANUAL_DEDUCT_SEARCH_KEY = "__manual_deduct__";
+
 function openProductSearchModal(key, title, originalSku) {
   productSearchTargetKey = key;
 
-  // 원래 Shopify 품목이 뭐였는지 계속 보이게 상단에 고정 표시 (검색창 열면 잊어버리기 쉬워서)
-  document.getElementById("product-search-context").innerHTML =
-    `매칭할 Shopify 품목: <strong>${escapeHtml(title || "-")}</strong>` +
-    (originalSku
-      ? ` <span style="font-family:var(--mono); color:var(--text-dim);">(원래 SKU: ${escapeHtml(originalSku)})</span>`
-      : ` <span style="color:var(--text-dim);">(원래 SKU 없음)</span>`);
+  if (key === MANUAL_DEDUCT_SEARCH_KEY) {
+    document.getElementById("product-search-context").textContent =
+      "수동 재고차감에 사용할 품목을 검색해서 선택하세요.";
+  } else {
+    // 원래 Shopify 품목이 뭐였는지 계속 보이게 상단에 고정 표시 (검색창 열면 잊어버리기 쉬워서)
+    document.getElementById("product-search-context").innerHTML =
+      `매칭할 Shopify 품목: <strong>${escapeHtml(title || "-")}</strong>` +
+      (originalSku
+        ? ` <span style="font-family:var(--mono); color:var(--text-dim);">(원래 SKU: ${escapeHtml(originalSku)})</span>`
+        : ` <span style="color:var(--text-dim);">(원래 SKU 없음)</span>`);
+  }
 
   const input = document.getElementById("product-search-input");
   input.value = title || "";
@@ -1395,7 +1447,9 @@ async function runProductSearch(query) {
     const rowsHtml = results
       .map(
         (p) => `
-        <tr class="product-search-result" data-sku="${escapeHtml(p.skuCode)}" style="cursor:pointer;">
+        <tr class="product-search-result" data-sku="${escapeHtml(p.skuCode)}"
+          data-product-name="${escapeHtml(p.productName || "")}" data-option="${escapeHtml(p.option || "")}"
+          style="cursor:pointer;">
           <td style="padding:8px 10px; border-bottom:1px solid var(--border);">${escapeHtml(p.productName || "(품목명 없음)")}</td>
           <td style="padding:8px 10px; border-bottom:1px solid var(--border); color:var(--accent);">${escapeHtml(p.option || "-")}</td>
           <td style="padding:8px 10px; border-bottom:1px solid var(--border); font-family:var(--mono); font-size:12px; color:var(--text-dim); white-space:nowrap;">${escapeHtml(p.skuCode)}</td>
@@ -1418,7 +1472,9 @@ async function runProductSearch(query) {
     resultsEl.querySelectorAll(".product-search-result").forEach((row) => {
       row.addEventListener("mouseenter", () => (row.style.background = "var(--panel-2)"));
       row.addEventListener("mouseleave", () => (row.style.background = ""));
-      row.addEventListener("click", () => applyProductSearchResult(row.dataset.sku));
+      row.addEventListener("click", () =>
+        applyProductSearchResult(row.dataset.sku, row.dataset.productName, row.dataset.option)
+      );
     });
   } catch (err) {
     errorEl.textContent = "검색 실패: " + err.message;
@@ -1426,8 +1482,12 @@ async function runProductSearch(query) {
   }
 }
 
-function applyProductSearchResult(sku) {
-  if (productSearchTargetKey) {
+function applyProductSearchResult(sku, productName, option) {
+  if (productSearchTargetKey === MANUAL_DEDUCT_SEARCH_KEY) {
+    manualDeductSelectedSku = sku;
+    const label = productName ? productName + (option ? ` — ${option}` : "") : sku;
+    document.getElementById("manual-deduct-sku-display").value = `${label} (${sku})`;
+  } else if (productSearchTargetKey) {
     const input = document.querySelector(
       `.stock-override-input[data-key="${cssAttr(productSearchTargetKey)}"]`
     );
@@ -1436,10 +1496,96 @@ function applyProductSearchResult(sku) {
       const row = input.closest("tr");
       if (row) row.classList.remove("missing"); // 검색으로 골랐으니 매칭된 것으로 간주해 표시만 정리
     }
+    // 빨간 경고문 자리에 방금 고른 품목명 — 옵션을 초록색으로 표시
+    const msgEl = document.querySelector(
+      `.sku-match-msg[data-key="${cssAttr(productSearchTargetKey)}"]`
+    );
+    if (msgEl) {
+      const label = productName ? productName + (option ? ` — ${option}` : "") : sku;
+      msgEl.textContent = `✓ 선택됨: ${label}`;
+      msgEl.style.color = "var(--domestic)";
+    }
   }
   document.getElementById("product-search-modal").classList.remove("visible");
   productSearchTargetKey = null;
 }
+
+// ── 수동 재고차감 ────────────────────────────────────────────────
+// 두 가지 방식으로 연다:
+//  - 주문 행의 "수동차감" 버튼: order를 넘김 → 그 주문에 귀속(중복방지 대상, 완료되면
+//    "재고차감 완료"로 표시되고 같은 주문번호로는 다시 못 함)
+//  - 상단 "수동 재고차감" 버튼: order 없이 열림 → 특정 주문과 무관, 중복방지 대상 아님
+let manualDeductContext = null; // { orderId, orderNumber } | null
+let manualDeductSelectedSku = null;
+
+function openManualDeductModal(order) {
+  manualDeductContext = order ? { orderId: order.id, orderNumber: order.orderNumber } : null;
+  manualDeductSelectedSku = null;
+
+  document.getElementById("manual-deduct-context").textContent = order
+    ? `연결된 주문: ${order.orderNumber} — 완료되면 "재고차감 완료"로 표시되고, 같은 주문으로는 다시 차감할 수 없습니다.`
+    : "특정 주문과 연결되지 않은 수동 차감입니다 (중복 방지 대상 아님).";
+  document.getElementById("manual-deduct-sku-display").value = "";
+  document.getElementById("manual-deduct-qty").value = "1";
+  document.getElementById("manual-deduct-note").value = order ? `Shopify ${order.orderNumber}` : "";
+  document.getElementById("manual-deduct-error").textContent = "";
+  document.getElementById("manual-deduct-modal").classList.add("visible");
+}
+
+document.getElementById("manual-deduct-open-btn").addEventListener("click", () => openManualDeductModal(null));
+
+document.getElementById("manual-deduct-cancel").addEventListener("click", () => {
+  document.getElementById("manual-deduct-modal").classList.remove("visible");
+  manualDeductContext = null;
+});
+
+document.getElementById("manual-deduct-search-btn").addEventListener("click", () => {
+  openProductSearchModal(MANUAL_DEDUCT_SEARCH_KEY, "", "");
+});
+
+document.getElementById("manual-deduct-confirm").addEventListener("click", async () => {
+  const errorEl = document.getElementById("manual-deduct-error");
+  const confirmBtn = document.getElementById("manual-deduct-confirm");
+  errorEl.textContent = "";
+
+  if (!manualDeductSelectedSku) {
+    errorEl.textContent = '"검색"으로 차감할 품목을 먼저 선택해주세요.';
+    return;
+  }
+  const qty = parseInt(document.getElementById("manual-deduct-qty").value, 10);
+  if (!Number.isInteger(qty) || qty < 1) {
+    errorEl.textContent = "수량은 1 이상의 정수여야 합니다.";
+    return;
+  }
+  const note = document.getElementById("manual-deduct-note").value.trim();
+
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = "처리 중...";
+  try {
+    await callFunction("sellmate-stock", {
+      action: "deduct",
+      warehouseId: DEFAULT_WAREHOUSE_ID,
+      items: [{ sku: manualDeductSelectedSku, quantity: qty }],
+      note,
+      orderId: manualDeductContext?.orderId,
+      orderNumber: manualDeductContext?.orderNumber ?? "",
+    });
+
+    document.getElementById("manual-deduct-modal").classList.remove("visible");
+
+    if (manualDeductContext) {
+      // 그 주문의 "재고차감 완료" 배지를 바로 갱신
+      await loadProcessedShipmentStatus(getProcessedDisplayList());
+      render();
+    }
+    manualDeductContext = null;
+  } catch (err) {
+    errorEl.textContent = "차감 실패: " + err.message;
+  } finally {
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = "재고차감 실행";
+  }
+});
 
 document.getElementById("stock-confirm-cancel").addEventListener("click", () => {
   document.getElementById("stock-confirm-modal").classList.remove("visible");
