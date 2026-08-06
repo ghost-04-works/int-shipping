@@ -433,6 +433,15 @@
         <input type="number" id="manual-deduct-qty" min="1" step="1" value="1" style="width:100%;" />
       </div>
     </div>
+    <div class="field-row">
+      <div class="field" style="flex:1;">
+        <label>차감 창고</label>
+        <select id="manual-deduct-warehouse" style="width:100%; padding:5px 8px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:5px;">
+          <option value="3" selected>해외창고 (3) — Shopify 글로벌스토어</option>
+          <option value="6">해외벤더 (6)</option>
+        </select>
+      </div>
+    </div>
     <div class="field">
       <label>셀메이트 작업 메모</label>
       <input type="text" id="manual-deduct-note" style="width:100%;" />
@@ -1527,6 +1536,7 @@ function openManualDeductModal(order) {
     : "특정 주문과 연결되지 않은 수동 차감입니다 (중복 방지 대상 아님).";
   document.getElementById("manual-deduct-sku-display").value = "";
   document.getElementById("manual-deduct-qty").value = "1";
+  document.getElementById("manual-deduct-warehouse").value = "3"; // 매번 열 때마다 기본 해외창고로 리셋
   document.getElementById("manual-deduct-note").value = order ? `Shopify ${order.orderNumber}` : "";
   document.getElementById("manual-deduct-error").textContent = "";
   document.getElementById("manual-deduct-modal").classList.add("visible");
@@ -1558,13 +1568,14 @@ document.getElementById("manual-deduct-confirm").addEventListener("click", async
     return;
   }
   const note = document.getElementById("manual-deduct-note").value.trim();
+  const warehouseId = parseInt(document.getElementById("manual-deduct-warehouse").value, 10);
 
   confirmBtn.disabled = true;
   confirmBtn.textContent = "처리 중...";
   try {
     await callFunction("sellmate-stock", {
       action: "deduct",
-      warehouseId: DEFAULT_WAREHOUSE_ID,
+      warehouseId,
       items: [{ sku: manualDeductSelectedSku, quantity: qty }],
       note,
       orderId: manualDeductContext?.orderId,
