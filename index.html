@@ -417,22 +417,9 @@
 </div>
 
 <div id="manual-deduct-modal" class="modal-overlay">
-  <div class="modal-box" style="width:600px;">
+  <div class="modal-box" style="width:640px;">
     <h2>수동 재고차감</h2>
     <div id="manual-deduct-context" style="font-size:12px; color:var(--text-dim); background:var(--panel-2); border-radius:6px; padding:8px 10px; margin-bottom:12px;"></div>
-    <div class="field-row">
-      <div class="field" style="flex:2;">
-        <label>품목 (검색으로 선택)</label>
-        <div style="display:flex; gap:6px;">
-          <input type="text" id="manual-deduct-sku-display" readonly placeholder="검색 버튼으로 품목을 선택하세요" style="flex:1; width:auto;" />
-          <button type="button" id="manual-deduct-search-btn">검색</button>
-        </div>
-      </div>
-      <div class="field" style="flex:1;">
-        <label>수량</label>
-        <input type="number" id="manual-deduct-qty" min="1" step="1" value="1" style="width:100%;" />
-      </div>
-    </div>
     <div class="field-row">
       <div class="field" style="flex:1;">
         <label>차감 창고</label>
@@ -441,6 +428,16 @@
           <option value="6">해외벤더 (6)</option>
         </select>
       </div>
+    </div>
+    <div class="field">
+      <label>품목 (검색으로 선택, 여러 개 추가 가능)</label>
+      <table class="origin-table">
+        <thead>
+          <tr><th>품목</th><th style="width:80px;">수량</th><th style="width:32px;"></th></tr>
+        </thead>
+        <tbody id="manual-deduct-rows-body"></tbody>
+      </table>
+      <button type="button" id="manual-deduct-add-row-btn" style="margin-top:8px;">+ 품목 추가</button>
     </div>
     <div class="field">
       <label>셀메이트 작업 메모</label>
@@ -1401,7 +1398,7 @@ const MANUAL_DEDUCT_SEARCH_KEY = "__manual_deduct__";
 function openProductSearchModal(key, title, originalSku) {
   productSearchTargetKey = key;
 
-  if (key === MANUAL_DEDUCT_SEARCH_KEY) {
+  if (key.startsWith(MANUAL_DEDUCT_SEARCH_KEY)) {
     document.getElementById("product-search-context").textContent =
       "수동 재고차감에 사용할 품목을 검색해서 선택하세요.";
   } else {
@@ -1492,10 +1489,14 @@ async function runProductSearch(query) {
 }
 
 function applyProductSearchResult(sku, productName, option) {
-  if (productSearchTargetKey === MANUAL_DEDUCT_SEARCH_KEY) {
-    manualDeductSelectedSku = sku;
-    const label = productName ? productName + (option ? ` — ${option}` : "") : sku;
-    document.getElementById("manual-deduct-sku-display").value = `${label} (${sku})`;
+  if (productSearchTargetKey && productSearchTargetKey.startsWith(MANUAL_DEDUCT_SEARCH_KEY)) {
+    const rowId = productSearchTargetKey.split(":")[1];
+    const display = document.querySelector(`.manual-deduct-row-sku-display[data-row-id="${rowId}"]`);
+    if (display) {
+      const label = productName ? productName + (option ? ` — ${option}` : "") : sku;
+      display.value = `${label} (${sku})`;
+      display.dataset.sku = sku;
+    }
   } else if (productSearchTargetKey) {
     const input = document.querySelector(
       `.stock-override-input[data-key="${cssAttr(productSearchTargetKey)}"]`
@@ -1525,32 +1526,66 @@ function applyProductSearchResult(sku, productName, option) {
 //    "재고차감 완료"로 표시되고 같은 주문번호로는 다시 못 함)
 //  - 상단 "수동 재고차감" 버튼: order 없이 열림 → 특정 주문과 무관, 중복방지 대상 아님
 let manualDeductContext = null; // { orderId, orderNumber } | null
-let manualDeductSelectedSku = null;
+let manualDeductRowIdCounter = 0;
+
+// 품목 행 하나 추가. 최소 1행은 항상 유지한다(다 지우면 빈 폼처럼 보여서 헷갈리므로).
+function addManualDeductRow() {
+  const id = ++manualDeductRowIdCounter;
+  const tbody = document.getElementById("manual-deduct-rows-body");
+  tbody.insertAdjacentHTML(
+    "beforeend",
+    `
+    <tr data-row-id="${id}">
+      <td>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input type="text" class="manual-deduct-row-sku-display" data-row-id="${id}" readonly
+            placeholder="검색 버튼으로 품목을 선택하세요" style="flex:1; width:auto; text-transform:none;" />
+          <button type="button" class="manual-deduct-row-search-btn" data-row-id="${id}"
+            style="padding:5px 8px; font-size:11px;">검색</button>
+        </div>
+      </td>
+      <td><input type="number" class="manual-deduct-row-qty" data-row-id="${id}" min="1" step="1" value="1" style="width:70px;" /></td>
+      <td><button type="button" class="manual-deduct-row-remove-btn" data-row-id="${id}" title="이 품목 제거" style="padding:4px 8px;">✕</button></td>
+    </tr>
+  `
+  );
+  tbody
+    .querySelector(`.manual-deduct-row-search-btn[data-row-id="${id}"]`)
+    .addEventListener("click", () => openProductSearchModal(`${MANUAL_DEDUCT_SEARCH_KEY}:${id}`, "", ""));
+  tbody
+    .querySelector(`.manual-deduct-row-remove-btn[data-row-id="${id}"]`)
+    .addEventListener("click", () => removeManualDeductRow(id));
+}
+
+function removeManualDeductRow(id) {
+  const tbody = document.getElementById("manual-deduct-rows-body");
+  const row = tbody.querySelector(`tr[data-row-id="${id}"]`);
+  if (row) row.remove();
+  if (tbody.children.length === 0) addManualDeductRow(); // 최소 1행 유지
+}
 
 function openManualDeductModal(order) {
   manualDeductContext = order ? { orderId: order.id, orderNumber: order.orderNumber } : null;
-  manualDeductSelectedSku = null;
 
   document.getElementById("manual-deduct-context").textContent = order
     ? `연결된 주문: ${order.orderNumber} — 완료되면 "재고차감 완료"로 표시되고, 같은 주문으로는 다시 차감할 수 없습니다.`
     : "특정 주문과 연결되지 않은 수동 차감입니다 (중복 방지 대상 아님).";
-  document.getElementById("manual-deduct-sku-display").value = "";
-  document.getElementById("manual-deduct-qty").value = "1";
   document.getElementById("manual-deduct-warehouse").value = "3"; // 매번 열 때마다 기본 해외창고로 리셋
   document.getElementById("manual-deduct-note").value = order ? `Shopify ${order.orderNumber}` : "";
   document.getElementById("manual-deduct-error").textContent = "";
+  document.getElementById("manual-deduct-rows-body").innerHTML = "";
+  manualDeductRowIdCounter = 0;
+  addManualDeductRow();
   document.getElementById("manual-deduct-modal").classList.add("visible");
 }
 
 document.getElementById("manual-deduct-open-btn").addEventListener("click", () => openManualDeductModal(null));
 
+document.getElementById("manual-deduct-add-row-btn").addEventListener("click", () => addManualDeductRow());
+
 document.getElementById("manual-deduct-cancel").addEventListener("click", () => {
   document.getElementById("manual-deduct-modal").classList.remove("visible");
   manualDeductContext = null;
-});
-
-document.getElementById("manual-deduct-search-btn").addEventListener("click", () => {
-  openProductSearchModal(MANUAL_DEDUCT_SEARCH_KEY, "", "");
 });
 
 document.getElementById("manual-deduct-confirm").addEventListener("click", async () => {
@@ -1558,15 +1593,28 @@ document.getElementById("manual-deduct-confirm").addEventListener("click", async
   const confirmBtn = document.getElementById("manual-deduct-confirm");
   errorEl.textContent = "";
 
-  if (!manualDeductSelectedSku) {
-    errorEl.textContent = '"검색"으로 차감할 품목을 먼저 선택해주세요.';
+  const rows = [...document.querySelectorAll("#manual-deduct-rows-body tr")];
+  const items = [];
+  for (const row of rows) {
+    const display = row.querySelector(".manual-deduct-row-sku-display");
+    const qtyInput = row.querySelector(".manual-deduct-row-qty");
+    const sku = display?.dataset.sku;
+    if (!sku) {
+      errorEl.textContent = '모든 품목에 "검색"으로 SKU를 선택해주세요.';
+      return;
+    }
+    const qty = parseInt(qtyInput.value, 10);
+    if (!Number.isInteger(qty) || qty < 1) {
+      errorEl.textContent = "수량은 1 이상의 정수여야 합니다.";
+      return;
+    }
+    items.push({ sku, quantity: qty });
+  }
+  if (items.length === 0) {
+    errorEl.textContent = "차감할 품목을 추가해주세요.";
     return;
   }
-  const qty = parseInt(document.getElementById("manual-deduct-qty").value, 10);
-  if (!Number.isInteger(qty) || qty < 1) {
-    errorEl.textContent = "수량은 1 이상의 정수여야 합니다.";
-    return;
-  }
+
   const note = document.getElementById("manual-deduct-note").value.trim();
   const warehouseId = parseInt(document.getElementById("manual-deduct-warehouse").value, 10);
 
@@ -1576,7 +1624,7 @@ document.getElementById("manual-deduct-confirm").addEventListener("click", async
     await callFunction("sellmate-stock", {
       action: "deduct",
       warehouseId,
-      items: [{ sku: manualDeductSelectedSku, quantity: qty }],
+      items,
       note,
       orderId: manualDeductContext?.orderId,
       orderNumber: manualDeductContext?.orderNumber ?? "",
