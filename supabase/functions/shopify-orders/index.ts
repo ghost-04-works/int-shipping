@@ -1,5 +1,5 @@
 // Supabase Edge Function: shopify-orders
-// VERSION-MARKER: 2026-09-29-discounted-unit-price
+// VERSION-MARKER: 2026-09-29-search-any-status
 // ------------------------------------------------------------------
 // Shopify Admin GraphQL API를 대신 호출해주는 프록시.
 // 브라우저에는 Shopify 액세스 토큰을 절대 노출하지 않고,
@@ -22,7 +22,8 @@
 //
 //   { "action": "search", "query": "28123", "status": "fulfilled" }
 //     -> 주문번호(부분 일치)로 검색. 페이지네이션과 무관하게 과거 주문도 바로 찾을 수 있음.
-//        status는 "fulfilled"(기본) 또는 "unfulfilled".
+//        status는 "fulfilled"(기본), "unfulfilled", 또는 "any"(취소·보관 주문 포함 전체 —
+//        int-shipping "주문번호로 가액 확인"에서 사용).
 //
 //   { "action": "updateAddress", "orderId": "gid://shopify/Order/123",
 //     "address": { "address1": "...", "city": "...", ... } }
@@ -163,6 +164,7 @@ function mapOrderNode(node: any) {
 }
 
 function statusToSearchQuery(status: string) {
+  if (status === "any") return ""; // GraphQL orders는 조건이 없으면 취소·보관 주문까지 전부 조회
   return status === "fulfilled"
     ? "fulfillment_status:fulfilled"
     : "fulfillment_status:unfulfilled AND status:open";
@@ -209,7 +211,8 @@ async function searchOrders(query: string, status: string = "fulfilled") {
 
   const digits = trimmed.replace(/[^0-9]/g, "");
   const namePart = digits ? `name:*${digits}*` : `name:*${trimmed}*`;
-  const searchQuery = `${namePart} AND ${statusToSearchQuery(status)}`;
+  const statusPart = statusToSearchQuery(status);
+  const searchQuery = statusPart ? `${namePart} AND ${statusPart}` : namePart;
 
   const data = await shopifyGraphQL(buildOrdersQuery(), { cursor: null, searchQuery });
   return data.orders.edges.map((edge: any) => mapOrderNode(edge.node));

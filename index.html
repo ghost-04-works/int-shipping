@@ -297,6 +297,9 @@
 
   <div id="dhl-label-toolbar" class="toolbar" style="display:none;">
     <button id="dhl-label-print-btn" class="primary">라벨 자동 출력</button>
+    <span style="border-left:1px solid var(--border); height:20px;"></span>
+    <input type="text" id="price-check-order-input" placeholder="주문번호 (예: 28795)" style="width:150px;" />
+    <button id="price-check-btn" title="취소된 주문 포함 주문번호로 불러와 DHL 가액만 확인·수정합니다 (라벨 출력 안 함)">가액만 확인·수정</button>
     <span id="dhl-label-status" style="font-size:12px; color:var(--text-dim);"></span>
   </div>
 
@@ -1145,6 +1148,7 @@ document.getElementById("dhl-label-print-btn").addEventListener("click", () => {
 
   // 1단계: DHL에 들어가 있는 단가를 먼저 읽어온다 → 읽기가 끝나면(DHL_AUTOMATE_READ_DONE) 비교 창을 띄움
   declaredPriceTargets = targets;
+  declaredPriceOnly = false;
   postToExtension(
     { type: "DHL_AUTOMATE_READ", orderNumbers: targets.map((o) => o.orderNumber) },
     `DHL 단가 확인을 위해 확장 프로그램에 ${targets.length}건 전달 중...`
@@ -1158,6 +1162,7 @@ document.getElementById("dhl-label-print-btn").addEventListener("click", () => {
 const DECLARED_PRICES_KEY = "dhlDeclaredPrices";
 const DECLARED_PRICES_TTL_MS = 60 * 24 * 60 * 60 * 1000; // 60일 지난 기록은 정리
 let declaredPriceTargets = [];
+let declaredPriceOnly = false; // true: "가액만 확인·수정"(라벨 출력 안 함), false: 라벨 자동 출력 흐름
 
 // Shopify 할인(자동 할인·코드 할인 모두)이 반영된 단가. shopify-orders 함수가
 // discountedUnitPrice를 넘겨주지 않으면 price로 대체한다.
@@ -1200,6 +1205,39 @@ function gmiUnitPrice(order, li, idx, declared) {
   }
   return defaultDeclaredUnitPrice(li) || 0;
 }
+
+// 주문번호로 Shopify 주문을 직접 불러와(취소·발송완료 주문 포함) DHL 가액만 확인·수정한다.
+// 목록에 안 보이는 주문(예: 테스트용으로 Shopify에서 취소했지만 DHL엔 살려둔 주문)도 다룰 수 있게 하려는 용도.
+document.getElementById("price-check-btn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("dhl-label-status");
+  const raw = document.getElementById("price-check-order-input").value.trim();
+  const digits = raw.replace(/[^0-9]/g, "");
+  if (!digits) {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = "주문번호를 입력해주세요.";
+    return;
+  }
+  statusEl.style.color = "var(--text-dim)";
+  statusEl.textContent = `#${digits} 주문 조회 중...`;
+  try {
+    const found = await callFunction("shopify-orders", { action: "search", query: digits, status: "any" });
+    const order = (found || []).find((o) => o.orderNumber === `#${digits}`);
+    if (!order) {
+      statusEl.style.color = "var(--danger)";
+      statusEl.textContent = `Shopify에서 #${digits} 주문을 찾지 못했습니다.`;
+      return;
+    }
+    declaredPriceTargets = [order];
+    declaredPriceOnly = true;
+    postToExtension(
+      { type: "DHL_AUTOMATE_READ", orderNumbers: [order.orderNumber] },
+      `${order.orderNumber}${order.cancelledAt ? " (Shopify 취소 주문)" : ""} DHL 단가 확인 중...`
+    );
+  } catch (err) {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = "주문 조회 실패: " + err.message;
+  }
+});
 
 // Shopify 라인과 DHL Items 행을 짝짓는다: SKU가 있으면 SKU, 없으면 품목명(앞부분 일치 — DHL은 이름이 잘려 보일 수 있음).
 // 반환: 라인 idx별 DHL 행 번호(-1이면 DHL에 없음) + 짝이 없는 DHL 행 번호 목록.
@@ -1337,9 +1375,9 @@ function openDeclaredPriceModal(targets, dhlResults) {
     document.getElementById("declared-all-dhl").addEventListener("click", () => setAllPriceActions("dhl"));
   }
 
-  document.getElementById("declared-price-confirm").textContent = mismatchCount
-    ? "확인 후 가액 수정 + 라벨 출력"
-    : "라벨 출력";
+  document.getElementById("declared-price-confirm").textContent = declaredPriceOnly
+    ? mismatchCount ? "가액만 수정 (라벨 출력 안 함)" : "닫기"
+    : mismatchCount ? "확인 후 가액 수정 + 라벨 출력" : "라벨 출력";
   document.getElementById("declared-price-modal-error").textContent = "";
   document.getElementById("declared-price-modal").classList.add("visible");
 }
@@ -1402,6 +1440,17 @@ document.getElementById("declared-price-confirm").addEventListener("click", () =
   document.getElementById("declared-price-modal").classList.remove("visible");
 
   const priceUpdates = Object.entries(updatesByOrder).map(([orderNumber, items]) => ({ orderNumber, items }));
+  if (declaredPriceOnly) {
+    if (priceUpdates.length === 0) {
+      document.getElementById("dhl-label-status").textContent = "DHL에서 수정할 가액이 없습니다.";
+      return;
+    }
+    postToExtension(
+      { type: "DHL_AUTOMATE", orderNumbers: priceUpdates.map((p) => p.orderNumber), priceUpdates, priceOnly: true },
+      "DHL 가액 수정 시작 (라벨 출력 안 함)..."
+    );
+    return;
+  }
   startDhlAutomation(declaredPriceTargets.map((o) => o.orderNumber), priceUpdates);
 });
 
@@ -1466,6 +1515,10 @@ window.addEventListener("message", (event) => {
     statusEl.style.color = "var(--text-dim)";
     statusEl.textContent = "DHL 단가 확인 완료 — 비교 결과를 확인해주세요.";
     openDeclaredPriceModal(declaredPriceTargets, msg.results || {});
+  } else if (msg.type === "DHL_AUTOMATE_PRICES_DONE") {
+    btn.disabled = false;
+    statusEl.style.color = "var(--domestic)";
+    statusEl.textContent = `완료: DHL 가액 수정 ${msg.done}건 (라벨 출력 안 함). DHL 탭에서 결과를 확인할 수 있습니다.`;
   } else if (msg.type === "DHL_AUTOMATE_DONE") {
     handleDhlAutomateDone(msg, statusEl, btn);
   } else if (msg.type === "DHL_AUTOMATE_ERROR") {
