@@ -1075,7 +1075,12 @@ async function handleDomesticFulfill(order) {
     }
 
     const unmatched = deductResult?.unmatchedSkus || [];
-    if (unmatched.length > 0) {
+    if (!deductResult || deductResult.deducted === false) {
+      statusEl.textContent = `발송처리 완료. ⚠ 재고 차감 안 됨 — ${
+        unmatched.length > 0 ? `SKU 매칭 실패: ${unmatched.join(", ")}` : "SKU 없음"
+      } (재고 수동 확인 필요)`;
+      statusEl.className = "status-msg err";
+    } else if (unmatched.length > 0) {
       statusEl.textContent = `발송처리 완료. ⚠ SKU 매칭 실패: ${unmatched.join(", ")} (재고 수동 확인 필요)`;
       statusEl.className = "status-msg err";
     } else {
@@ -2298,7 +2303,7 @@ document.getElementById("manual-deduct-confirm").addEventListener("click", async
   confirmBtn.disabled = true;
   confirmBtn.textContent = "처리 중...";
   try {
-    await callFunction("sellmate-stock", {
+    const deductResult = await callFunction("sellmate-stock", {
       action: "deduct",
       warehouseId,
       items,
@@ -2306,6 +2311,10 @@ document.getElementById("manual-deduct-confirm").addEventListener("click", async
       orderId: manualDeductContext?.orderId,
       orderNumber: manualDeductContext?.orderNumber ?? "",
     });
+    if (deductResult?.deducted === false) {
+      errorEl.textContent = `차감 안 됨 — SKU 매칭 실패: ${(deductResult.unmatchedSkus || []).join(", ")}`;
+      return;
+    }
 
     document.getElementById("manual-deduct-modal").classList.remove("visible");
 
@@ -2375,6 +2384,7 @@ async function performStockDeduction(targets, overrideMap = new Map()) {
   let successCount = 0;
   let skippedCount = 0;
   let failedCount = 0;
+  let notDeductedCount = 0;
 
   for (const order of targets) {
     const match = dhlReportMap[order.orderNumber];
@@ -2429,6 +2439,17 @@ async function performStockDeduction(targets, overrideMap = new Map()) {
       }
 
       const unmatched = deductResult?.unmatchedSkus || [];
+      if (!deductResult || deductResult.deducted === false) {
+        // 차감된 품목이 하나도 없음 — 서버도 처리 기록을 남기지 않으므로 SKU를 고친 뒤 다시 차감하면 된다
+        notDeductedCount++;
+        if (statusEl) {
+          statusEl.textContent = `⚠ 차감 안 됨 — ${
+            unmatched.length > 0 ? `SKU 매칭 실패: ${unmatched.join(", ")}` : "SKU 없음"
+          }`;
+          statusEl.className = "status-msg err";
+        }
+        continue;
+      }
       successCount++;
       if (statusEl) {
         if (unmatched.length > 0) {
@@ -2450,6 +2471,7 @@ async function performStockDeduction(targets, overrideMap = new Map()) {
 
   logEl.innerHTML =
     `처리 완료 — 성공 ${successCount}건 / 스킵 ${skippedCount}건 / 실패 ${failedCount}건` +
+    (notDeductedCount > 0 ? ` / <b>차감 안 됨 ${notDeductedCount}건</b>(SKU 매칭 실패)` : "") +
     (skippedCount > 0 ? ` <span style="color:var(--text-dim);">(스킵: 이미 재고차감된 주문 또는 DHL 리포트 미매칭)</span>` : "");
 
   // 방금 차감된 건이 있으면 "처리완료" 탭의 재고차감 상태 배지도 최신 상태로 갱신
