@@ -27,6 +27,7 @@ const SELECTORS = {
   itemsGridHeaderCell: "thead th[data-col-index]",
   itemsGridRow: "tbody tr.k-master-row",
   saveButton: "button.btn-order-save",
+  orderDescItem: ".ssit-order-desc-item", // "Reference # 7192060100771" 등 주문 상단 정보
 };
 
 const DHL_ORDERS_URL = "https://app2.dhlexpresscommerce.com/orders";
@@ -273,14 +274,26 @@ async function runPriceReadOnDetailPage(current) {
     throw new Error(`열린 상세 화면이 ${current.orderNumber} 주문이 아닙니다.`);
   }
   const rows = readItemRows(grid).map(({ name, sku, qty, unitPrice }) => ({ name, sku, qty, unitPrice }));
+  const reference = readOrderReference();
   const { dhlReadQueue = [] } = await storageGet(["dhlReadQueue"]);
-  await recordReadResult(current.orderNumber, { rows }, dhlReadQueue);
+  await recordReadResult(current.orderNumber, { rows, reference }, dhlReadQueue);
   await storageSet({ dhlReadCurrent: null });
   if (dhlReadQueue.length > 0) {
     location.assign(DHL_ORDERS_URL);
   } else {
     await finishRead();
   }
+}
+
+// 주문 상세 상단의 "Reference # 7192060100771" — Shopify에서 들어온 주문이면 Shopify 주문 ID다.
+// int-shipping이 Shopify 검색에 안 잡히는 주문(취소·환불·보관)을 이 ID로 직접 조회하는 데 쓴다.
+function readOrderReference() {
+  for (const el of document.querySelectorAll(SELECTORS.orderDescItem)) {
+    const text = el.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    const m = text.match(/^Reference\s*#\s*(\d+)/i);
+    if (m) return m[1];
+  }
+  return null;
 }
 
 async function recordReadResult(orderNumber, result, remainingQueue) {
