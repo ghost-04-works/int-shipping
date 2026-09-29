@@ -29,6 +29,7 @@ const SELECTORS = {
   saveButton: "button.btn-order-save",
   itemEditButton: "button.grid-button-edit", // Items 행 오른쪽 연필 버튼 → Item details 창
   itemModal: ".blazored-modal.order-item-create-modal",
+  sectionToggle: ".items-display-toggle", // 주문 상세 각 영역(Items 등) 제목 옆 펼치기/접기(∨/∧) 버튼
   orderDescItem: ".ssit-order-desc-item", // "Reference # 7192060100771" 등 주문 상단 정보
 };
 
@@ -340,7 +341,7 @@ async function runPriceEditOnDetailPage() {
   const { dhlPriceCurrent: current } = await storageGet(["dhlPriceCurrent"]);
   if (!current) return; // 자동화 중이 아닐 때 사용자가 직접 연 상세 화면 — 아무것도 하지 않음
 
-  const grid = await waitForItemsGrid();
+  const grid = await ensureItemsEditable(await waitForItemsGrid());
   if (!pageShowsOrderNumber(current.orderNumber)) {
     throw new Error(`열린 상세 화면이 ${current.orderNumber} 주문이 아닙니다.`);
   }
@@ -402,7 +403,7 @@ async function waitForItemsGrid({ timeout = 20000 } = {}) {
   let lastSnapshot = "";
   let stableSince = 0;
   while (Date.now() - start < timeout) {
-    const grid = document.querySelector(SELECTORS.itemsGrid);
+    const grid = pickItemsGrid();
     if (grid && grid.querySelector(SELECTORS.itemsGridRow)) {
       const rows = readItemRows(grid);
       const filled = rows.length > 0 && rows.every((r) => (r.name || r.sku) && r.unitPrice !== null);
@@ -511,6 +512,35 @@ async function editPriceViaItemModal(rowEl, value, item) {
   const closed = await waitFor(() => !document.querySelector(SELECTORS.itemModal), 10000);
   if (!closed) throw new Error(`Update order 후 Item details 창이 닫히지 않았습니다(${label}).`);
   await sleep(800);
+}
+
+// 화면에 Items 표가 둘 이상 그려질 수 있어(요약 표 + 편집 표) 입력칸이 있는 편집 표를 우선한다.
+function pickItemsGrid() {
+  const grids = Array.from(document.querySelectorAll(SELECTORS.itemsGrid));
+  return grids.find(hasPriceInputs) ?? grids[0] ?? null;
+}
+
+// Unit Price 칸에 입력칸이 있는 편집용 표인지 (무게/사이즈 칸만 입력칸인 경우와 구분)
+function hasPriceInputs(grid) {
+  const priceCol = findColumnIndex(grid, ITEMS_COLUMN_TEXT.unitPrice);
+  return priceCol != null && !!grid.querySelector(`${SELECTORS.itemsGridRow} td[data-col-index="${priceCol}"] input`);
+}
+
+// Items 영역이 접혀(∨) 있으면 표가 글자로만 된 요약이라 입력칸도, 행별 편집(연필) 버튼도 없다
+// (실측: #28783). "Items" 제목 옆의 펼치기 버튼을 눌러 편집용 표(입력칸 + 연필 버튼)로 바꾼다.
+async function ensureItemsEditable(grid) {
+  if (hasPriceInputs(grid)) return grid;
+  const toggle = Array.from(document.querySelectorAll(SELECTORS.sectionToggle)).find(
+    (t) => t.closest(".row")?.querySelector(".order-section-heading")?.textContent?.trim().toLowerCase() === "items"
+  );
+  if (!toggle) return grid; // 펼치기 버튼이 없으면 그대로 진행(행 편집 버튼이 있으면 Item details 창으로 수정)
+  (toggle.querySelector("i.toggle") ?? toggle).click();
+  const expanded = await waitFor(() => {
+    const g = pickItemsGrid();
+    return g && hasPriceInputs(g) ? g : null;
+  }, 10000);
+  if (!expanded) return grid;
+  return waitForItemsGrid(); // 펼친 표의 값이 다 채워질 때까지 다시 기다림
 }
 
 async function waitFor(check, timeout) {
