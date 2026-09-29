@@ -1321,7 +1321,7 @@ function openDeclaredPriceModal(targets, dhlResults) {
     if (!result || result.notFound) {
       notFoundOrders.push(order.orderNumber);
       rowsHtml.push(`<tr class="order-start price-missing"><td>${escapeHtml(order.orderNumber)}</td>
-        <td colspan="7" style="color:var(--danger);">DHL 주문 목록에서 찾지 못했습니다 — 가액 확인·수정 없이 진행됩니다 (라벨 출력에서도 누락될 수 있음)</td></tr>`);
+        <td colspan="7" style="color:var(--danger);">DHL 주문 목록(New 탭)에서 찾지 못했습니다 — 이미 라벨을 출력해 다른 탭으로 넘어간 주문일 수 있습니다. 가액 확인·수정 없이 진행됩니다.</td></tr>`);
       order.lineItems.forEach((li, idx) => {
         declaredPriceLines.push({ order, idx, li, shopify: defaultDeclaredUnitPrice(li), dhlRow: null, rowIndex: -1, status: "notfound" });
       });
@@ -1409,8 +1409,14 @@ function openDeclaredPriceModal(targets, dhlResults) {
 
   const summary = document.getElementById("declared-price-summary");
   summary.innerHTML = `
-    <span style="color:${mismatchCount ? "var(--danger)" : "var(--domestic)"}; font-weight:600;">
-      ${mismatchCount ? `불일치 ${mismatchCount}개 품목 (${mismatchOrders.size}건 주문)` : "모든 품목이 Shopify와 일치합니다"}
+    <span style="color:${mismatchCount || notFoundOrders.length ? "var(--danger)" : "var(--domestic)"}; font-weight:600;">
+      ${mismatchCount
+        ? `불일치 ${mismatchCount}개 품목 (${mismatchOrders.size}건 주문)`
+        : notFoundOrders.length === targets.length
+          ? "DHL에서 주문을 찾지 못해 비교하지 못했습니다"
+          : notFoundOrders.length
+            ? "DHL에서 찾은 주문은 모두 Shopify와 일치합니다"
+            : "모든 품목이 Shopify와 일치합니다"}
     </span>
     ${notFoundOrders.length ? `<span style="color:var(--danger);">DHL에서 못 찾은 주문: ${escapeHtml(notFoundOrders.join(", "))}</span>` : ""}
     ${mismatchCount ? `<label style="font-size:12px;"><input type="checkbox" id="declared-only-mismatch" checked /> 불일치만 보기</label>
