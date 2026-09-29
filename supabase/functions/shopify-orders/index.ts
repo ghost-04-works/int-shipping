@@ -1,5 +1,5 @@
 // Supabase Edge Function: shopify-orders
-// VERSION-MARKER: 2026-09-29-get-by-id
+// VERSION-MARKER: 2026-09-29-current-quantity
 // ------------------------------------------------------------------
 // Shopify Admin GraphQL API를 대신 호출해주는 프록시.
 // 브라우저에는 Shopify 액세스 토큰을 절대 노출하지 않고,
@@ -41,7 +41,7 @@
 // ------------------------------------------------------------------
 
 // 배포된 버전 확인용 ({ "action": "version" }) — 위 VERSION-MARKER와 같이 올릴 것
-const VERSION = "2026-09-29-get-by-id";
+const VERSION = "2026-09-29-current-quantity";
 
 const STORE_DOMAIN = Deno.env.get("SHOPIFY_STORE_DOMAIN")!;
 const ACCESS_TOKEN = Deno.env.get("SHOPIFY_ACCESS_TOKEN")!;
@@ -102,6 +102,8 @@ const ORDER_FIELDS = `
                 variantTitle
                 sku
                 quantity
+                # 주문 편집으로 제거되거나 환불된 수량을 뺀 현재 수량 (실측: #27960 "제거됨" 품목이 수출신고에 들어감)
+                currentQuantity
                 originalUnitPriceSet {
                   shopMoney { amount }
                 }
@@ -151,7 +153,11 @@ function mapOrderNode(node: any) {
     fulfillmentStatus: node.displayFulfillmentStatus,
     shippingMethod: node.shippingLine?.title ?? null,
     shippingAddress: node.shippingAddress,
-    lineItems: node.lineItems.edges.map((e: any) => {
+    // quantity는 현재 수량(제거·환불 반영), 현재 수량이 0인 품목(주문에서 제거됨)은 뺀다 —
+    // 포장대장·수출신고·재고차감·가액 비교 모두 실제로 보내는 품목 기준이어야 한다. 처음 주문 수량은 originalQuantity.
+    lineItems: node.lineItems.edges
+      .filter((e: any) => (e.node.currentQuantity ?? e.node.quantity) > 0)
+      .map((e: any) => {
       const baseTitle = e.node.title;
       const variantTitle = e.node.variantTitle;
       const fullTitle =
@@ -162,7 +168,8 @@ function mapOrderNode(node: any) {
         id: e.node.id,
         title: fullTitle,
         sku: e.node.sku,
-        quantity: e.node.quantity,
+        quantity: e.node.currentQuantity ?? e.node.quantity,
+        originalQuantity: e.node.quantity,
         price: parseFloat(e.node.originalUnitPriceSet?.shopMoney?.amount ?? "0"),
         // DHL 신고 가액 비교·GMI 수출신고에 쓰는 할인 적용 단가 (Shopify 주문 화면에 보이는 결제 단가)
         discountedUnitPrice: parseFloat(
