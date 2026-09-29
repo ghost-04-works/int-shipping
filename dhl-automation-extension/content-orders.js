@@ -100,6 +100,14 @@ async function main() {
     return;
   }
 
+  // 라벨 출력은 라벨 작업으로 시작된 경우(dhlPrintLabels === true)에만 — 남아 있던 주문번호나
+  // 가액만 수정 작업에서 라벨이 나가는 일이 없도록 한 번 더 막는다.
+  const { dhlPrintLabels = false } = await storageGet(["dhlPrintLabels"]);
+  if (dhlPrintLabels !== true) {
+    console.log("[DHL 자동화] 라벨 출력 작업이 아니어서 아무것도 하지 않습니다.");
+    return;
+  }
+
   const targetOrderNumbers = await getTargetOrderNumbers();
   if (targetOrderNumbers.length === 0) {
     // 자동화 작업 없이 DHL 주문 목록을 연 경우(직접 열었거나 작업이 끝난 탭을 새로고침) — 정상 상황이라

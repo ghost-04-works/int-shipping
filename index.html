@@ -1547,7 +1547,7 @@ document.getElementById("declared-price-confirm").addEventListener("click", () =
       return;
     }
     postToExtension(
-      { type: "DHL_AUTOMATE", orderNumbers: priceUpdates.map((p) => p.orderNumber), priceUpdates, priceOnly: true },
+      { type: "DHL_PRICES_ONLY", orderNumbers: priceUpdates.map((p) => p.orderNumber), priceUpdates },
       "DHL 가액 수정 시작 (라벨 출력 안 함)..."
     );
     return;
@@ -1558,14 +1558,48 @@ document.getElementById("declared-price-confirm").addEventListener("click", () =
 function startDhlAutomation(orderNumbers, priceUpdates) {
   const editCount = priceUpdates.length;
   postToExtension(
-    { type: "DHL_AUTOMATE", orderNumbers, priceUpdates },
+    { type: "DHL_AUTOMATE", orderNumbers, priceUpdates, printLabels: true },
     `확장 프로그램에 ${orderNumbers.length}건 전달 중...` + (editCount ? ` (가액 수정 ${editCount}건 포함)` : "")
   );
 }
 
-function postToExtension(payload, statusText) {
+// 확장 프로그램 버전 확인 — 가액 확인·수정은 요청 종류가 바뀐 1.2 이상에서만 안전하다
+// (옛 버전 파일이 섞이면 "가액만 수정"이 라벨 출력으로 처리된 사고가 있었음).
+const MIN_EXTENSION_VERSION = "1.2";
+let extensionVersion = null;
+window.addEventListener("message", (event) => {
+  if (event.source === window && event.data?.type === "DHL_EXT_HELLO") extensionVersion = event.data.version || null;
+});
+
+function versionAtLeast(v, min) {
+  const a = String(v).split(".").map(Number);
+  const b = String(min).split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  }
+  return true;
+}
+
+async function checkExtensionVersion() {
+  if (!extensionVersion) {
+    window.postMessage({ type: "DHL_EXT_PING" }, "*");
+    const start = Date.now();
+    while (!extensionVersion && Date.now() - start < 1500) await sleep(100);
+  }
+  return extensionVersion && versionAtLeast(extensionVersion, MIN_EXTENSION_VERSION);
+}
+
+async function postToExtension(payload, statusText) {
   const statusEl = document.getElementById("dhl-label-status");
   const btn = document.getElementById("dhl-label-print-btn");
+  if (!(await checkExtensionVersion())) {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = extensionVersion
+      ? `확장 프로그램이 예전 버전(${extensionVersion})입니다. ${MIN_EXTENSION_VERSION} 이상으로 전체 파일을 교체한 뒤 다시 시도해주세요. (요청을 보내지 않았습니다)`
+      : `확장 프로그램 버전을 확인할 수 없습니다. ${MIN_EXTENSION_VERSION} 이상으로 전체 파일을 교체하고 새로고침한 뒤 다시 시도해주세요. (요청을 보내지 않았습니다)`;
+    btn.disabled = false;
+    return;
+  }
   btn.disabled = true;
   statusEl.style.color = "var(--text-dim)";
   statusEl.textContent = statusText;
