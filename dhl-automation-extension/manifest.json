@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GEONWORKS DHL 자동화",
-  "version": "1.2",
+  "version": "1.3",
   "description": "int-shipping에서 선택한 주문을 DHL Express Commerce에서 자동으로 라벨 출력 및 리포트 다운로드합니다.",
   "permissions": ["tabs", "scripting", "storage", "downloads"],
   "host_permissions": [
