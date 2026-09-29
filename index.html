@@ -253,6 +253,7 @@
   .origin-table input.price-input { width: 80px; text-transform: none; }
   .origin-table tr.order-start td { border-top: 2px solid var(--border); }
   .origin-table tr.price-mismatch td { background: rgba(229, 72, 77, 0.10); }
+  .origin-table .price-original { color: var(--text-dim); text-decoration: line-through; margin-right: 4px; }
   .origin-table tr.price-missing td { background: rgba(255, 204, 0, 0.10); }
   .origin-table tr.price-match td { color: var(--text-dim); }
   .origin-table .price-diff { color: var(--danger); font-weight: 600; }
@@ -1346,15 +1347,26 @@ function openDeclaredPriceModal(targets, dhlResults) {
         ? `<span class="price-diff" title="DHL 수량이 다릅니다">${li.quantity} / DHL ${dhlRow.qty}</span>`
         : `${li.quantity}`;
 
+      // 할인 적용 단가(discountedUnitPrice)가 없으면 Shopify 칸은 정가라, 기본값을 "Shopify에 맞춤"으로 두면
+      // DHL에 이미 들어가 있는 할인가를 정가로 덮어쓰게 된다 — 이 경우 기본값은 "DHL 값 유지".
+      const hasDiscount = li.discountedUnitPrice !== undefined && li.discountedUnitPrice !== null;
+      const original = li.price !== undefined && li.price !== null && li.price !== "" ? Number(li.price) : null;
+      const shopifyCell = !hasDiscount
+        ? `${fmtPrice(shopify)} <span style="color:var(--dhl); font-size:11px;">(정가)</span>`
+        : original !== null && !samePrice(original, shopify)
+          ? `<span class="price-original">${fmtPrice(original)}</span> ${fmtPrice(shopify)}`
+          : fmtPrice(shopify);
+
       let actionCell;
       let finalValue;
       if (status === "mismatch") {
+        const defaultAction = hasDiscount ? "shopify" : "dhl";
         actionCell = `<select class="price-action" data-line="${lineNo}">
-            <option value="shopify">Shopify에 맞춤</option>
-            <option value="dhl">DHL 값 유지</option>
+            <option value="shopify"${defaultAction === "shopify" ? " selected" : ""}>Shopify에 맞춤</option>
+            <option value="dhl"${defaultAction === "dhl" ? " selected" : ""}>DHL 값 유지</option>
             <option value="manual">직접 입력</option>
           </select>`;
-        finalValue = shopify;
+        finalValue = defaultAction === "shopify" ? shopify : dhlRow.unitPrice;
       } else if (status === "match") {
         actionCell = "일치";
         finalValue = dhlRow.unitPrice;
@@ -1369,7 +1381,7 @@ function openDeclaredPriceModal(targets, dhlResults) {
           <td>${escapeHtml(li.title)}</td>
           <td>${escapeHtml(li.sku || "SKU 없음")}</td>
           <td>${qtyCell}</td>
-          <td>${fmtPrice(shopify)}</td>
+          <td>${shopifyCell}</td>
           <td class="${status === "mismatch" ? "price-diff" : ""}">${dhlRow ? fmtPrice(dhlRow.unitPrice) : "-"}</td>
           <td>${actionCell}</td>
           <td><input type="number" step="0.01" min="0" class="price-input" data-line="${lineNo}"
@@ -1404,7 +1416,7 @@ function openDeclaredPriceModal(targets, dhlResults) {
     ${mismatchCount ? `<label style="font-size:12px;"><input type="checkbox" id="declared-only-mismatch" checked /> 불일치만 보기</label>
       <button type="button" id="declared-all-shopify">불일치 전부 Shopify에 맞춤</button>
       <button type="button" id="declared-all-dhl">불일치 전부 DHL 유지</button>` : ""}
-    ${hasDiscountField ? "" : `<span style="color:var(--dhl);">※ Shopify 할인 적용 단가 정보가 없어 Shopify 단가(price)로 비교 중입니다</span>`}
+    ${hasDiscountField ? "" : `<span style="color:var(--danger); font-weight:600;">⚠ Shopify 할인 적용 단가를 받지 못해 정가로 비교 중입니다 — "Shopify에 맞춤"을 고르면 DHL이 정가로 바뀝니다. shopify-orders 함수를 최신 버전으로 배포해주세요.</span>`}
   `;
   if (mismatchCount) {
     document.getElementById("declared-only-mismatch").addEventListener("change", (e) => {
