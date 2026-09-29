@@ -701,13 +701,19 @@ async function loadProcessedOrders({ append = false } = {}) {
 // 기존에 알고 있던 상태는 지우지 않고 덧붙인다 — "더 보기"/검색으로 일부만 다시 조회해도
 // 이미 확인했던 다른 주문들의 배지가 사라지지 않게 하기 위함.
 async function loadProcessedShipmentStatus(orders) {
-  const orderIds = orders.map((o) => o.id);
+  const orderIds = [...new Set(orders.map((o) => o.id).filter(Boolean))];
   if (orderIds.length === 0) return;
-  try {
-    const result = await callFunction("sellmate-stock", { action: "checkProcessed", orderIds });
-    processedShipmentMap = { ...processedShipmentMap, ...result };
-  } catch (err) {
-    console.error("재고차감 상태 조회 실패:", err);
+  // 함수가 주문 ID를 URL 조회 조건으로 넘기므로 한 번에 수백 건을 보내면 URL이 너무 길어져 실패한다.
+  // 나눠서 조회하고, 일부 묶음이 실패해도 나머지 결과는 반영한다.
+  const CHUNK = 40;
+  const chunks = [];
+  for (let i = 0; i < orderIds.length; i += CHUNK) chunks.push(orderIds.slice(i, i + CHUNK));
+  const results = await Promise.allSettled(
+    chunks.map((ids) => callFunction("sellmate-stock", { action: "checkProcessed", orderIds: ids }))
+  );
+  for (const r of results) {
+    if (r.status === "fulfilled") processedShipmentMap = { ...processedShipmentMap, ...r.value };
+    else console.error("재고차감 상태 조회 실패:", r.reason);
   }
 }
 
