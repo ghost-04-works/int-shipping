@@ -151,4 +151,6 @@ DHL(DEC)에도 할인 금액이 들어가긴 하지만 Shopify와 정확히 일�
 - **가액만 확인·수정**: int-shipping에서 주문번호를 입력하면 `shopify-orders`의 `search`(`status: "any"`, 취소·발송완료
   주문 포함)로 주문을 불러와 같은 읽기 → 비교 과정을 거친 뒤, `DHL_AUTOMATE`에 `priceOnly: true`로 가액 수정만 하고
   라벨 출력/리포트는 건너뛴다(`dhlPriceOnly` → `PRICES_ONLY_DONE` → `DHL_AUTOMATE_PRICES_DONE`). DHL 탭은 결과 확인용으로 열어 둔다.
+  Shopify 검색은 취소+환불+보관된 주문을 어떤 조건으로도 돌려주지 않아서(실측 #28783), 검색에 없으면 DHL 단가를 먼저 읽으면서
+  주문 상세의 `Reference #`(= Shopify 주문 ID, `.ssit-order-desc-item`)를 가져와 `shopify-orders`의 `get`으로 직접 조회한다.
 - 작업이 끝나면(성공/실패) `dhlTargetOrders`/`dhlPrice*`/`dhlRead*` 저장값을 지운다.
