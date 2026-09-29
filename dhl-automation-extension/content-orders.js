@@ -41,6 +41,7 @@ const ITEMS_COLUMN_TEXT = {
   ship: "Ship",
 };
 const PRICE_MAX_ATTEMPTS = 2; // 저장 후 확인했을 때 값이 안 바뀌어 있으면 한 번 더 시도
+const MAX_REOPENS = 4; // 저장 후 DHL이 목록으로 보냈을 때 같은 주문 상세를 다시 여는 최대 횟수
 
 const BUTTON_TEXT = {
   printLabels: "Print shipping labels", // Actions 드롭다운 안의 메뉴 항목
@@ -73,8 +74,20 @@ async function main() {
     return;
   }
   if (dhlPriceCurrent) {
-    // 상세 화면에서 처리 중이던 주문이 끝나지 않은 채 목록으로 돌아온 경우 — 저장이 됐는지 알 수 없으니 중단
-    throw new Error(`${dhlPriceCurrent.orderNumber} 가액 수정이 끝나지 않은 채 목록으로 돌아왔습니다. DHL에서 직접 확인해주세요.`);
+    // 처리 중이던 주문이 끝나기 전에 목록으로 돌아온 경우 — DHL은 SAVE(또는 UPDATE ORDER) 후 스스로 주문 목록으로
+    // 이동한다(실측 #28783). 상세 화면을 다시 열어 이어간다: 저장 뒤(verify)면 값 확인, 수정 중(edit)이면 남은 품목 수정.
+    // 무한 반복을 막기 위해 같은 주문을 다시 여는 횟수는 제한한다.
+    const reopens = (dhlPriceCurrent.reopens ?? 0) + 1;
+    if (reopens > MAX_REOPENS) {
+      throw new Error(`${dhlPriceCurrent.orderNumber} 가액 수정이 끝나지 않은 채 계속 목록으로 돌아옵니다. DHL에서 직접 확인해주세요.`);
+    }
+    await storageSet({ dhlPriceCurrent: { ...dhlPriceCurrent, reopens } });
+    const link = await findOrderLinkAcrossPages(dhlPriceCurrent.orderNumber);
+    if (!link) {
+      throw new Error(`${dhlPriceCurrent.orderNumber} 주문을 목록에서 다시 찾지 못했습니다. (${describeLastScan()})`);
+    }
+    await openOrderDetail(link, dhlPriceCurrent.orderNumber);
+    return;
   }
   if (dhlPriceQueue.length > 0) {
     await openNextPriceOrder(dhlPriceQueue);
@@ -376,7 +389,9 @@ async function runPriceEditOnDetailPage() {
   // 펼친 표도 선택된 한 행만 입력칸이 생겨서 표 안에서 바로 고치는 건 불안정하다 — 연필이 있으면 항상 창으로 고친다.
   // 창을 닫으면 표가 다시 그려질 수 있어 품목마다 행을 새로 찾는다.
   for (const item of current.items) {
-    const [{ priceInput, rowEl }] = matchItemsToRows(pickItemsGrid(), [item]);
+    const [{ priceInput, rowEl, unitPrice }] = matchItemsToRows(pickItemsGrid(), [item]);
+    // 이미 목표 값이면 건너뛴다 — UPDATE ORDER/SAVE 후 목록으로 튕겨 다시 열었을 때 남은 품목만 고치도록
+    if (samePrice(unitPrice, item.unitPrice)) continue;
     if (rowEl.querySelector(SELECTORS.itemEditButton)) {
       await editPriceViaItemModal(rowEl, formatPrice(item.unitPrice), item);
     } else {
