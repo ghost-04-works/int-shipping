@@ -1,5 +1,5 @@
 // Supabase Edge Function: shopify-orders
-// VERSION-MARKER: 2026-09-29-search-any-status
+// VERSION-MARKER: 2026-09-29-search-exact-name
 // ------------------------------------------------------------------
 // Shopify Admin GraphQL API를 대신 호출해주는 프록시.
 // 브라우저에는 Shopify 액세스 토큰을 절대 노출하지 않고,
@@ -210,7 +210,11 @@ async function searchOrders(query: string, status: string = "fulfilled") {
   if (!trimmed) return [];
 
   const digits = trimmed.replace(/[^0-9]/g, "");
-  const namePart = digits ? `name:*${digits}*` : `name:*${trimmed}*`;
+  // "#28783" 정확 일치를 먼저 넣고 부분 일치(*28783*)도 같이 찾는다 — Shopify 검색은 앞쪽 와일드카드를
+  // 제대로 처리하지 못하는 경우가 있어 부분 일치만으로는 정확한 주문번호가 빠질 수 있다.
+  const namePart = digits
+    ? `(name:#${digits} OR name:${digits} OR name:*${digits}*)`
+    : `name:*${trimmed}*`;
   const statusPart = statusToSearchQuery(status);
   const searchQuery = statusPart ? `${namePart} AND ${statusPart}` : namePart;
 
