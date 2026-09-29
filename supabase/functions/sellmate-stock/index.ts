@@ -1,5 +1,5 @@
 // Supabase Edge Function: sellmate-stock
-// VERSION-MARKER: 2026-09-29-release-claim-on-failure
+// VERSION-MARKER: 2026-09-29-no-claim-without-deduction
 // ------------------------------------------------------------------
 // Shopify 출고 품목(SKU + 수량)을 받아서:
 //   1) Supabase products 테이블에서 sku_code -> barcode 매칭
@@ -31,7 +31,8 @@
 //
 // 응답 형식:
 //   deduct:
-//     { "unmatchedSkus": ["ABC123"], "sellmate": { success: [...], errors: [...], message: "..." } }
+//     { "unmatchedSkus": ["ABC123"], "sellmate": { success: [...], errors: [...], message: "..." }, "deducted": true }
+//     차감할 품목이 하나도 없으면(전부 SKU 매칭 실패) "deducted": false, "sellmate": null 이고 처리 기록도 남기지 않는다
 //   lookupProducts:
 //     { "ABC123": { barcode, originCode, productName } }
 //   checkProcessed:
@@ -389,17 +390,25 @@ Deno.serve(async (req: Request) => {
           qty: i.quantity,
         }));
 
-      if (stockItems.length > 0) {
-        const token = await getSellmateToken();
-        sellmateResult = await deductStock(
-          token,
-          stockItems,
-          warehouseId,
-          workTypeId,
-          inputTypeId,
-          note,
+      if (stockItems.length === 0) {
+        // 차감할 품목이 하나도 없음 — "처리됨" 기록을 남기면 차감 안 된 주문에 완료 배지가 뜨므로 되돌린다.
+        // SKU를 고친 뒤 기록을 따로 지우지 않고 바로 다시 차감할 수 있다.
+        if (orderId) await releaseOrderClaim(orderId);
+        return new Response(
+          JSON.stringify({ data: { unmatchedSkus, sellmate: null, deducted: false } }),
+          { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
         );
       }
+
+      const token = await getSellmateToken();
+      sellmateResult = await deductStock(
+        token,
+        stockItems,
+        warehouseId,
+        workTypeId,
+        inputTypeId,
+        note,
+      );
     } catch (err) {
       // 차감이 확실히 안 된 실패면 "처리됨" 기록을 되돌려 다시 시도할 수 있게 한다
       if (orderId && !(err instanceof SellmateUncertainError)) await releaseOrderClaim(orderId);
@@ -407,7 +416,7 @@ Deno.serve(async (req: Request) => {
     }
 
     return new Response(
-      JSON.stringify({ data: { unmatchedSkus, sellmate: sellmateResult } }),
+      JSON.stringify({ data: { unmatchedSkus, sellmate: sellmateResult, deducted: true } }),
       { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
     );
   } catch (err) {
