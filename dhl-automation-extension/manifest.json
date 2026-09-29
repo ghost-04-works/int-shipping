@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "GEONWORKS DHL 자동화",
+  "version": "1.0",
+  "description": "int-shipping에서 선택한 주문을 DHL Express Commerce에서 자동으로 라벨 출력 및 리포트 다운로드합니다.",
+  "permissions": ["tabs", "scripting", "storage", "downloads"],
+  "host_permissions": [
+    "https://app2.dhlexpresscommerce.com/*",
+    "https://ghost-04-works.github.io/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://ghost-04-works.github.io/int-shipping/*"],
+      "js": ["content-bridge.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://app2.dhlexpresscommerce.com/orders*"],
+      "js": ["content-orders-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://app2.dhlexpresscommerce.com/orders*"],
+      "js": ["content-orders.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://app2.dhlexpresscommerce.com/reports*"],
+      "js": ["content-reports-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://app2.dhlexpresscommerce.com/reports*"],
+      "js": ["content-reports.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
