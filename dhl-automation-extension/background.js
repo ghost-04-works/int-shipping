@@ -17,6 +17,7 @@ function resetJob() {
     "dhlReadQueue",
     "dhlReadCurrent",
     "dhlReadResults",
+    "dhlPriceOnly",
   ]);
 }
 
@@ -37,7 +38,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message, sender) {
   switch (message?.type) {
     case "DHL_AUTOMATE_START":
-      return startJob(message.orderNumbers, message.priceUpdates, sender.tab?.id, sender.tab?.windowId);
+      return startJob(
+        message.orderNumbers,
+        message.priceUpdates,
+        !!message.priceOnly,
+        sender.tab?.id,
+        sender.tab?.windowId
+      );
+
+    case "PRICES_ONLY_DONE":
+      return onPricesOnlyDone();
 
     case "DHL_READ_PRICES_START":
       return startReadJob(message.orderNumbers, sender.tab?.id, sender.tab?.windowId);
@@ -108,7 +118,8 @@ async function handleMessage(message, sender) {
 
 // priceUpdates: [{ orderNumber, items: [{ sku, title, unitPrice }] }] — 라벨 출력 전에
 // DHL 주문 상세 화면에서 Unit Price를 이 값으로 바꿀 주문들(없으면 가액 수정 없이 바로 라벨 출력)
-async function startJob(orderNumbers, priceUpdates, sourceTabId, sourceWindowId) {
+// priceOnly: true면 가액 수정까지만 하고 라벨 출력/리포트는 건너뛴다(주문번호로 가액만 확인·수정할 때)
+async function startJob(orderNumbers, priceUpdates, priceOnly, sourceTabId, sourceWindowId) {
   if (!Array.isArray(orderNumbers) || orderNumbers.length === 0) {
     return { ok: false, error: "orderNumbers가 비어있습니다." };
   }
@@ -129,10 +140,15 @@ async function startJob(orderNumbers, priceUpdates, sourceTabId, sourceWindowId)
     pricesTotal: priceQueue.length,
     pricesDone: 0,
   };
+  if (priceOnly && priceQueue.length === 0) {
+    job = null;
+    return { ok: false, error: "수정할 가액이 없습니다." };
+  }
   await chrome.storage.local.set({
-    dhlTargetOrders: orderNumbers,
+    dhlTargetOrders: priceOnly ? [] : orderNumbers,
     dhlPriceQueue: priceQueue,
     dhlPriceCurrent: null,
+    dhlPriceOnly: priceOnly,
   });
 
   const tab = await chrome.tabs.create({ url: DHL_ORDERS_URL });
@@ -193,6 +209,15 @@ async function onReadDone(message) {
   } catch (err) {
     console.warn("[DHL 자동화] 가액 읽기 탭 닫기 실패", err);
   }
+  return { ok: true };
+}
+
+// 가액만 수정하는 작업이 끝남 — DHL 탭은 사람이 결과를 확인할 수 있게 열어 두고 int-shipping으로 포커스만 돌린다
+async function onPricesOnlyDone() {
+  if (!job) return { ok: false, error: "no active job" };
+  await notifySource({ type: "DHL_AUTOMATE_PRICES_DONE", done: job.pricesDone ?? 0 });
+  await focusSourceTab();
+  resetJob();
   return { ok: true };
 }
 

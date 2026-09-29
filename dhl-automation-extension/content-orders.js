@@ -76,6 +76,12 @@ async function main() {
     await openNextPriceOrder(dhlPriceQueue);
     return;
   }
+  const { dhlPriceOnly = false } = await storageGet(["dhlPriceOnly"]);
+  if (dhlPriceOnly) {
+    // 가액만 수정하는 작업 — 라벨 출력 없이 끝낸다
+    chrome.runtime.sendMessage({ type: "PRICES_ONLY_DONE" });
+    return;
+  }
 
   const targetOrderNumbers = await getTargetOrderNumbers();
   if (targetOrderNumbers.length === 0) {
