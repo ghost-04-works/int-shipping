@@ -386,17 +386,40 @@ async function runPriceEditOnDetailPage() {
   location.reload(); // 새로고침한 화면에서 값이 실제로 저장됐는지 확인
 }
 
+// Items 표가 뜨고 행 안의 입력칸 값(품목명/SKU/단가)까지 채워질 때까지 기다린다.
+// 표 구조와 "of N" 수량 글자는 먼저 그려지고 입력칸 값은 조금 뒤에 채워져서, 표가 보이자마자 읽으면
+// 품목명·SKU·단가가 전부 빈 값으로 읽힌다(실측: #28783 7개 품목이 모두 "DHL에 없음" + 빈 DHL 행 7개).
+// 값이 끝내 안 채워지면 페이지를 한 번 새로고침해서 다시 시도하고, 그래도 안 되면 중단한다.
 async function waitForItemsGrid({ timeout = 20000 } = {}) {
+  const reloadKey = `dhlGridReloaded:${location.pathname}`;
   const start = Date.now();
+  let lastSnapshot = "";
+  let stableSince = 0;
   while (Date.now() - start < timeout) {
     const grid = document.querySelector(SELECTORS.itemsGrid);
     if (grid && grid.querySelector(SELECTORS.itemsGridRow)) {
-      await sleep(800); // 행 안 input 값이 채워질 시간
-      return grid;
+      const rows = readItemRows(grid);
+      const filled = rows.length > 0 && rows.every((r) => (r.name || r.sku) && r.unitPrice !== null);
+      const snapshot = rows.map((r) => `${r.sku}|${r.name}|${r.unitPrice}`).join(";");
+      if (filled) {
+        if (snapshot !== lastSnapshot) {
+          lastSnapshot = snapshot;
+          stableSince = Date.now();
+        } else if (Date.now() - stableSince >= 600) {
+          sessionStorage.removeItem(reloadKey);
+          return grid;
+        }
+      }
     }
     await sleep(300);
   }
-  throw new Error("주문 상세 화면의 Items 표를 찾지 못했습니다.");
+  if (!sessionStorage.getItem(reloadKey)) {
+    sessionStorage.setItem(reloadKey, "1");
+    location.reload();
+    return new Promise(() => {}); // 새로고침되면 스크립트가 처음부터 다시 실행됨
+  }
+  sessionStorage.removeItem(reloadKey);
+  throw new Error("주문 상세 화면의 Items 표 값(품목명/SKU/단가)이 채워지지 않았습니다. 다시 시도해주세요.");
 }
 
 function pageShowsOrderNumber(orderNumber) {
