@@ -1,5 +1,5 @@
 // Supabase Edge Function: sellmate-stock
-// VERSION-MARKER: 2026-08-04-optional-order-id
+// VERSION-MARKER: 2026-09-29-release-claim-on-failure
 // ------------------------------------------------------------------
 // Shopify 출고 품목(SKU + 수량)을 받아서:
 //   1) Supabase products 테이블에서 sku_code -> barcode 매칭
@@ -73,6 +73,18 @@ async function claimOrderForProcessing(orderId: string, orderNumber: string, war
   }
   return { alreadyProcessed: false };
 }
+
+// ── 0-0) 차감이 확실히 안 된 경우 "처리됨" 기록을 되돌린다 ──
+// 기록을 먼저 남기고 차감하는 구조라, 차감이 실패했는데 기록이 남으면 그 주문은 "재고차감 완료"로 보이고
+// 다시 시도해도 409로 막혀 재고가 영영 안 빠진다. 셀메이트에 요청이 가지 않았거나 셀메이트가 오류로 응답한
+// 경우에만 되돌린다(요청을 보낸 뒤 응답을 못 받은 경우는 이미 차감됐을 수 있어 되돌리지 않는다).
+async function releaseOrderClaim(orderId: string) {
+  const { error } = await supabase.from("processed_shipments").delete().eq("order_id", orderId);
+  if (error) console.error(`처리 기록 되돌리기 실패 (${orderId}): ${error.message}`);
+}
+
+// 셀메이트에 요청은 보냈지만 응답을 받지 못함 — 실제 차감 여부를 알 수 없음
+class SellmateUncertainError extends Error {}
 
 // ── 0-1) 재고차감 처리 여부 일괄 조회 (처리완료 탭에서 상태 표시용) ──
 async function checkProcessed(orderIds: string[]) {
@@ -246,17 +258,24 @@ async function deductStock(
     })),
   };
 
-  const resp = await fetch(`${SELLMATE_BASE_URL}/stockHistories`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(`${SELLMATE_BASE_URL}/stockHistories`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw new SellmateUncertainError(
+      `셀메이트 응답을 받지 못했습니다(${String(err)}). 셀메이트에서 차감 여부를 확인해주세요.`,
+    );
+  }
 
-  const result = await resp.json();
+  const result = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     throw new Error(`셀메이트 재고차감 실패: ${resp.status} ${JSON.stringify(result)}`);
   }
@@ -339,43 +358,52 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // 1) 동반출고 SKU 확장 — 구매 SKU 외에 같이 나가야 하는 SKU를 목록에 추가
-    const purchasedSkus = items.map((i: { sku: string }) => i.sku).filter(Boolean);
-    const companionMap = await resolveCompanions(purchasedSkus);
+    let unmatchedSkus: string[] = [];
+    let sellmateResult = null;
+    try {
+      // 1) 동반출고 SKU 확장 — 구매 SKU 외에 같이 나가야 하는 SKU를 목록에 추가
+      const purchasedSkus = items.map((i: { sku: string }) => i.sku).filter(Boolean);
+      const companionMap = await resolveCompanions(purchasedSkus);
 
-    const expandedItems: { sku: string; quantity: number }[] = [...items];
-    for (const item of items as { sku: string; quantity: number }[]) {
-      const companions = companionMap.get(item.sku);
-      if (companions) {
-        for (const c of companions) {
-          expandedItems.push({ sku: c.sku, quantity: item.quantity * c.qtyPerUnit });
+      const expandedItems: { sku: string; quantity: number }[] = [...items];
+      for (const item of items as { sku: string; quantity: number }[]) {
+        const companions = companionMap.get(item.sku);
+        if (companions) {
+          for (const c of companions) {
+            expandedItems.push({ sku: c.sku, quantity: item.quantity * c.qtyPerUnit });
+          }
         }
       }
-    }
 
-    // 2) SKU -> barcode 매칭 (구매 SKU + 동반출고 SKU 전부 포함)
-    const skus = expandedItems.map((i) => i.sku);
-    const { skuToBarcode, unmatchedSkus } = await resolveBarcodes(skus);
+      // 2) SKU -> barcode 매칭 (구매 SKU + 동반출고 SKU 전부 포함)
+      const skus = expandedItems.map((i) => i.sku);
+      const resolved = await resolveBarcodes(skus);
+      const skuToBarcode = resolved.skuToBarcode;
+      unmatchedSkus = resolved.unmatchedSkus;
 
-    // 매칭 안 된 SKU는 제외하고 진행 (unmatchedSkus는 응답에 포함해 사람이 확인)
-    const stockItems = expandedItems
-      .filter((i) => skuToBarcode.has(i.sku))
-      .map((i) => ({
-        barcode1: skuToBarcode.get(i.sku)!,
-        qty: i.quantity,
-      }));
+      // 매칭 안 된 SKU는 제외하고 진행 (unmatchedSkus는 응답에 포함해 사람이 확인)
+      const stockItems = expandedItems
+        .filter((i) => skuToBarcode.has(i.sku))
+        .map((i) => ({
+          barcode1: skuToBarcode.get(i.sku)!,
+          qty: i.quantity,
+        }));
 
-    let sellmateResult = null;
-    if (stockItems.length > 0) {
-      const token = await getSellmateToken();
-      sellmateResult = await deductStock(
-        token,
-        stockItems,
-        warehouseId,
-        workTypeId,
-        inputTypeId,
-        note,
-      );
+      if (stockItems.length > 0) {
+        const token = await getSellmateToken();
+        sellmateResult = await deductStock(
+          token,
+          stockItems,
+          warehouseId,
+          workTypeId,
+          inputTypeId,
+          note,
+        );
+      }
+    } catch (err) {
+      // 차감이 확실히 안 된 실패면 "처리됨" 기록을 되돌려 다시 시도할 수 있게 한다
+      if (orderId && !(err instanceof SellmateUncertainError)) await releaseOrderClaim(orderId);
+      throw err;
     }
 
     return new Response(
