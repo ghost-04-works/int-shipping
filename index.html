@@ -1149,6 +1149,7 @@ document.getElementById("dhl-label-print-btn").addEventListener("click", () => {
   // 1단계: DHL에 들어가 있는 단가를 먼저 읽어온다 → 읽기가 끝나면(DHL_AUTOMATE_READ_DONE) 비교 창을 띄움
   declaredPriceTargets = targets;
   declaredPriceOnly = false;
+  pendingLookupOrderNumber = null;
   postToExtension(
     { type: "DHL_AUTOMATE_READ", orderNumbers: targets.map((o) => o.orderNumber) },
     `DHL 단가 확인을 위해 확장 프로그램에 ${targets.length}건 전달 중...`
@@ -1163,6 +1164,8 @@ const DECLARED_PRICES_KEY = "dhlDeclaredPrices";
 const DECLARED_PRICES_TTL_MS = 60 * 24 * 60 * 60 * 1000; // 60일 지난 기록은 정리
 let declaredPriceTargets = [];
 let declaredPriceOnly = false; // true: "가액만 확인·수정"(라벨 출력 안 함), false: 라벨 자동 출력 흐름
+// Shopify 검색에 안 잡히는 주문(취소+환불+보관 등)을 DHL "Reference #"(= Shopify 주문 ID)로 찾는 중이면 그 주문번호
+let pendingLookupOrderNumber = null;
 
 // Shopify 할인(자동 할인·코드 할인 모두)이 반영된 단가. shopify-orders 함수가
 // discountedUnitPrice를 넘겨주지 않으면 price로 대체한다.
@@ -1222,13 +1225,20 @@ document.getElementById("price-check-btn").addEventListener("click", async () =>
   try {
     const found = await callFunction("shopify-orders", { action: "search", query: digits, status: "any" });
     const order = (found || []).find((o) => o.orderNumber === `#${digits}`);
+    declaredPriceOnly = true;
     if (!order) {
-      statusEl.style.color = "var(--danger)";
-      statusEl.textContent = `Shopify에서 #${digits} 주문을 찾지 못했습니다.`;
+      // Shopify 검색은 취소+환불+보관된 주문을 돌려주지 않는다(실측 #28783). DHL 단가를 먼저 읽으면서
+      // 주문 상세의 Reference #(= Shopify 주문 ID)를 가져와 그 ID로 직접 조회한다 → DHL_AUTOMATE_READ_DONE에서 이어감.
+      declaredPriceTargets = [];
+      pendingLookupOrderNumber = `#${digits}`;
+      postToExtension(
+        { type: "DHL_AUTOMATE_READ", orderNumbers: [`#${digits}`] },
+        `#${digits}: Shopify 검색에 없어 DHL 주문의 Reference #로 찾는 중...`
+      );
       return;
     }
+    pendingLookupOrderNumber = null;
     declaredPriceTargets = [order];
-    declaredPriceOnly = true;
     postToExtension(
       { type: "DHL_AUTOMATE_READ", orderNumbers: [order.orderNumber] },
       `${order.orderNumber}${order.cancelledAt ? " (Shopify 취소 주문)" : ""} DHL 단가 확인 중...`
@@ -1238,6 +1248,35 @@ document.getElementById("price-check-btn").addEventListener("click", async () =>
     statusEl.textContent = "주문 조회 실패: " + err.message;
   }
 });
+
+// DHL에서 읽은 Reference #(= Shopify 주문 ID)로 Shopify 주문을 직접 조회해 비교 창을 띄운다.
+async function openLookedUpOrderModal(orderNumber, results, statusEl) {
+  const result = results[orderNumber];
+  if (!result || result.notFound) {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = `${orderNumber}: Shopify 검색에도, DHL 주문 목록에도 없습니다.`;
+    return;
+  }
+  if (!result.reference) {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = `${orderNumber}: DHL 주문에서 Reference #를 찾지 못해 Shopify 주문을 조회할 수 없습니다.`;
+    return;
+  }
+  try {
+    const order = await callFunction("shopify-orders", { action: "get", orderId: result.reference });
+    if (!order || order.orderNumber !== orderNumber) {
+      statusEl.style.color = "var(--danger)";
+      statusEl.textContent = `${orderNumber}: DHL Reference #${result.reference}로 조회한 Shopify 주문이 ${order ? order.orderNumber : "없음"}입니다.`;
+      return;
+    }
+    statusEl.textContent = `${orderNumber}${order.cancelledAt ? " (Shopify 취소 주문)" : ""} — DHL Reference #로 조회했습니다. 비교 결과를 확인해주세요.`;
+    declaredPriceTargets = [order];
+    openDeclaredPriceModal([order], results);
+  } catch (err) {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = `${orderNumber}: Shopify 주문 조회 실패 — ${err.message} (shopify-orders 함수가 최신 버전인지 확인해주세요)`;
+  }
+}
 
 // Shopify 라인과 DHL Items 행을 짝짓는다: SKU가 있으면 SKU, 없으면 품목명(앞부분 일치 — DHL은 이름이 잘려 보일 수 있음).
 // 반환: 라인 idx별 DHL 행 번호(-1이면 DHL에 없음) + 짝이 없는 DHL 행 번호 목록.
@@ -1514,7 +1553,12 @@ window.addEventListener("message", (event) => {
     btn.disabled = false;
     statusEl.style.color = "var(--text-dim)";
     statusEl.textContent = "DHL 단가 확인 완료 — 비교 결과를 확인해주세요.";
-    openDeclaredPriceModal(declaredPriceTargets, msg.results || {});
+    if (pendingLookupOrderNumber) {
+      openLookedUpOrderModal(pendingLookupOrderNumber, msg.results || {}, statusEl);
+      pendingLookupOrderNumber = null;
+    } else {
+      openDeclaredPriceModal(declaredPriceTargets, msg.results || {});
+    }
   } else if (msg.type === "DHL_AUTOMATE_PRICES_DONE") {
     btn.disabled = false;
     statusEl.style.color = "var(--domestic)";

@@ -1,5 +1,5 @@
 // Supabase Edge Function: shopify-orders
-// VERSION-MARKER: 2026-09-29-search-cancelled-closed
+// VERSION-MARKER: 2026-09-29-get-by-id
 // ------------------------------------------------------------------
 // Shopify Admin GraphQL API를 대신 호출해주는 프록시.
 // 브라우저에는 Shopify 액세스 토큰을 절대 노출하지 않고,
@@ -25,6 +25,11 @@
 //        status는 "fulfilled"(기본), "unfulfilled", 또는 "any"(취소·보관 주문 포함 전체 —
 //        int-shipping "주문번호로 가액 확인"에서 사용).
 //
+//   { "action": "get", "orderId": "7192060100771" }
+//     -> Shopify 주문 ID로 단건 조회 (검색에 안 잡히는 취소·환불·보관 주문도 조회됨). 없으면 null.
+//
+//   { "action": "version" } -> 배포된 함수 버전 문자열
+//
 //   { "action": "updateAddress", "orderId": "gid://shopify/Order/123",
 //     "address": { "address1": "...", "city": "...", ... } }
 //     -> 배송주소 수정
@@ -34,6 +39,9 @@
 //     "notifyCustomer": false }
 //     -> 발송처리 (운송장 입력 + fulfillment 생성)
 // ------------------------------------------------------------------
+
+// 배포된 버전 확인용 ({ "action": "version" }) — 위 VERSION-MARKER와 같이 올릴 것
+const VERSION = "2026-09-29-get-by-id";
 
 const STORE_DOMAIN = Deno.env.get("SHOPIFY_STORE_DOMAIN")!;
 const ACCESS_TOKEN = Deno.env.get("SHOPIFY_ACCESS_TOKEN")!;
@@ -64,13 +72,8 @@ async function shopifyGraphQL(query: string, variables: Record<string, unknown> 
 }
 
 // ── 1) 주문 목록 조회 / 검색 ──────────────────────────────────────
-function buildOrdersQuery() {
-  return `
-  query listOrders($cursor: String, $searchQuery: String!) {
-    orders(first: 50, after: $cursor, query: $searchQuery, sortKey: CREATED_AT, reverse: true) {
-      edges {
-        cursor
-        node {
+// 주문 목록/검색/단건 조회가 같이 쓰는 주문 필드 (mapOrderNode가 기대하는 모양)
+const ORDER_FIELDS = `
           id
           name
           note
@@ -117,6 +120,16 @@ function buildOrdersQuery() {
               }
             }
           }
+`;
+
+function buildOrdersQuery() {
+  return `
+  query listOrders($cursor: String, $searchQuery: String!) {
+    orders(first: 50, after: $cursor, query: $searchQuery, sortKey: CREATED_AT, reverse: true) {
+      edges {
+        cursor
+        node {
+          ${ORDER_FIELDS}
         }
       }
       pageInfo { hasNextPage endCursor }
@@ -233,6 +246,20 @@ async function searchOrders(query: string, status: string = "fulfilled") {
   const searchQuery = `${namePart} AND ${statusPart}`;
   const data = await shopifyGraphQL(buildOrdersQuery(), { cursor: null, searchQuery });
   return data.orders.edges.map((edge: any) => mapOrderNode(edge.node));
+}
+
+// Shopify 주문 ID로 단건 조회 — 검색 결과에 안 나오는 주문(실측: 취소+환불+보관된 #28783은
+// 검색 조건을 어떻게 줘도 0건)도 상태와 무관하게 가져온다. 숫자 ID("7192060100771")나 gid 둘 다 받음.
+// int-shipping은 DHL 주문 상세의 "Reference #"(= Shopify 주문 ID)를 읽어 이걸 호출한다.
+async function getOrder(orderId: string) {
+  const id = String(orderId ?? "").trim();
+  if (!id) return null;
+  const gid = id.startsWith("gid://") ? id : `gid://shopify/Order/${id.replace(/[^0-9]/g, "")}`;
+  const data = await shopifyGraphQL(
+    `query getOrder($id: ID!) { order(id: $id) { ${ORDER_FIELDS} } }`,
+    { id: gid },
+  );
+  return data.order ? mapOrderNode(data.order) : null;
 }
 
 // ── 2) 배송주소 수정 ─────────────────────────────────────────────
@@ -358,6 +385,14 @@ Deno.serve(async (req: Request) => {
     switch (action) {
       case "list":
         result = await listOrders(body.status ?? "unfulfilled", body.cursor ?? null);
+        break;
+
+      case "get":
+        result = await getOrder(body.orderId);
+        break;
+
+      case "version":
+        result = VERSION;
         break;
 
       case "search":
