@@ -3,11 +3,18 @@
 
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
-  if (event.data?.type !== "DHL_AUTOMATE") return;
+  // DHL_AUTOMATE: (가액 수정 +) 라벨 출력 + 리포트 / DHL_AUTOMATE_READ: DHL 단가 읽기만
+  const type = event.data?.type;
+  if (type !== "DHL_AUTOMATE" && type !== "DHL_AUTOMATE_READ") return;
 
   const orderNumbers = event.data.orderNumbers ?? [];
+  const priceUpdates = event.data.priceUpdates ?? [];
+  const message =
+    type === "DHL_AUTOMATE_READ"
+      ? { type: "DHL_READ_PRICES_START", orderNumbers }
+      : { type: "DHL_AUTOMATE_START", orderNumbers, priceUpdates };
   chrome.runtime.sendMessage(
-    { type: "DHL_AUTOMATE_START", orderNumbers },
+    message,
     (response) => {
       if (chrome.runtime.lastError) {
         postToPage({

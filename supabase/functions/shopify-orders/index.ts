@@ -1,5 +1,5 @@
 // Supabase Edge Function: shopify-orders
-// VERSION-MARKER: 2026-08-04-processed-pagination-search
+// VERSION-MARKER: 2026-09-29-discounted-unit-price
 // ------------------------------------------------------------------
 // Shopify Admin GraphQL API를 대신 호출해주는 프록시.
 // 브라우저에는 Shopify 액세스 토큰을 절대 노출하지 않고,
@@ -101,6 +101,10 @@ function buildOrdersQuery() {
                 originalUnitPriceSet {
                   shopMoney { amount }
                 }
+                # 할인(자동 할인·할인 코드·주문 전체 할인 배분) 적용 후 고객이 실제 결제한 단가
+                discountedUnitPriceAfterAllDiscountsSet {
+                  shopMoney { amount }
+                }
               }
             }
           }
@@ -146,6 +150,12 @@ function mapOrderNode(node: any) {
         sku: e.node.sku,
         quantity: e.node.quantity,
         price: parseFloat(e.node.originalUnitPriceSet?.shopMoney?.amount ?? "0"),
+        // DHL 신고 가액 비교·GMI 수출신고에 쓰는 할인 적용 단가 (Shopify 주문 화면에 보이는 결제 단가)
+        discountedUnitPrice: parseFloat(
+          e.node.discountedUnitPriceAfterAllDiscountsSet?.shopMoney?.amount ??
+            e.node.originalUnitPriceSet?.shopMoney?.amount ??
+            "0",
+        ),
       };
     }),
     fulfillmentOrderIds: node.fulfillmentOrders.edges.map((e: any) => e.node.id),
