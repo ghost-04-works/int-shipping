@@ -526,6 +526,33 @@ let currentTab = "dhl";
 let dhlReportMap = {}; // orderNumber -> { tracking, shipto, weight, freight, ct, country }
 let dhlReportOrderSequence = []; // 리포트 파일에 등장한 순서 그대로의 주문번호 목록
 let dhlReportLoading = false; // 리포트 파싱 + 목록에 없는 주문 조회가 끝날 때까지 true
+let labelBatchOrderNumbers = null; // 라벨 자동 출력으로 방금 라벨을 출력한 주문번호들
+let reportBatchFilter = null; // 다음에 파싱할 리포트에서 자동 체크할 주문번호(라벨 자동 출력에서 넘어온 리포트일 때만)
+
+// 포장대장/수출신고 파일을 만든 주문 기록 (이 브라우저, 30일 보관) — 직접 올린 리포트에서 이미 파일을 만든
+// 주문은 자동 체크하지 않고, 처리완료 목록에 "파일 생성" 표시를 한다.
+const EXPORT_HISTORY_KEY = "dhlExportHistory";
+const EXPORT_HISTORY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+function loadExportHistory() {
+  try {
+    const all = JSON.parse(localStorage.getItem(EXPORT_HISTORY_KEY) || "{}");
+    const now = Date.now();
+    for (const k of Object.keys(all)) if (!all[k] || now - all[k] > EXPORT_HISTORY_TTL_MS) delete all[k];
+    return all;
+  } catch {
+    return {};
+  }
+}
+function recordExportHistory(orderNumbers) {
+  try {
+    const all = loadExportHistory();
+    const now = Date.now();
+    for (const no of orderNumbers) all[no] = now;
+    localStorage.setItem(EXPORT_HISTORY_KEY, JSON.stringify(all));
+  } catch (err) {
+    console.warn("파일 생성 기록 저장 실패", err);
+  }
+}
 let selectedDhlOrderIds = new Set();
 
 // ── 인증 ──────────────────────────────────────────────────────────
@@ -915,9 +942,14 @@ function renderProcessedStatus(order) {
     : `<span style="color:var(--text-dim);">재고차감 안 됨</span>
        <button type="button" class="manual-deduct-btn" data-order-id="${order.id}"
          style="margin-left:6px; padding:2px 6px; font-size:11px;">수동차감</button>`;
+  const exportedAt = loadExportHistory()[order.orderNumber];
+  const exportLine = exportedAt
+    ? `<div style="font-size:12px; margin-top:4px; color:var(--text-dim);">📄 파일 생성 ${new Date(exportedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>`
+    : "";
   return `
     <div style="font-size:12px;">${fulfillLabel}</div>
     <div style="font-size:12px; margin-top:4px;">${stockLine}</div>
+    ${exportLine}
     <div class="status-msg" id="status-${cssId(order.id)}"></div>
   `;
 }
@@ -1594,6 +1626,7 @@ document.getElementById("declared-price-confirm").addEventListener("click", () =
 
 function startDhlAutomation(orderNumbers, priceUpdates) {
   const editCount = priceUpdates.length;
+  labelBatchOrderNumbers = new Set(orderNumbers); // 이번에 라벨을 출력하는 주문 — 리포트가 오면 이 주문만 체크
   postToExtension(
     { type: "DHL_AUTOMATE", orderNumbers, priceUpdates, printLabels: true },
     `확장 프로그램에 ${orderNumbers.length}건 전달 중...` + (editCount ? ` (가액 수정 ${editCount}건 포함)` : "")
@@ -1731,6 +1764,9 @@ async function handleDhlAutomateDone(msg, statusEl, btn) {
   await loadProcessedOrders();
 
   try {
+    // 이 리포트로는 방금 라벨을 출력한 주문만 체크한다 (오늘 앞서 출력한 주문이 섞이지 않게)
+    reportBatchFilter = labelBatchOrderNumbers;
+    selectedDhlOrderIds.clear();
     injectReportFile(msg.report);
   } catch (err) {
     statusEl.style.color = "var(--danger)";
@@ -1820,40 +1856,63 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
       dhlReportOrderSequence.push(ref);
     }
 
-    statusEl.textContent = `${Object.keys(dhlReportMap).length}건 매칭 데이터 로드됨`;
+    const reportNumbers = Object.keys(dhlReportMap);
+    statusEl.textContent = `${reportNumbers.length}건 매칭 데이터 로드됨`;
+    statusEl.style.color = "";
 
-    // 리포트에 있는 주문번호들을 자동으로 체크 선택
-    const reportOrderNumbers = new Set(Object.keys(dhlReportMap));
-    const candidateList = currentTab === "processed" ? getProcessedDisplayList() : allOrders;
-    let autoSelectedCount = 0;
-    for (const order of candidateList) {
-      if (reportOrderNumbers.has(order.orderNumber)) {
-        selectedDhlOrderIds.add(order.id);
-        autoSelectedCount++;
-      }
+    // 자동 체크 대상 정하기. DHL "오늘 날짜" 리포트에는 오늘 출력한 라벨이 전부 들어 있어서, 전부 체크하면
+    // 이미 처리한 오전 출력분이 포장대장·수출신고 파일에 섞인다(실측).
+    // - 라벨 자동 출력에서 넘어온 리포트: 방금 라벨을 출력한 주문(이번 출력분)만 체크
+    // - 직접 올린 리포트: 포장대장/수출신고 파일을 이미 만든 적 있는 주문은 빼고 체크 (필요하면 사람이 직접 체크)
+    const batch = reportBatchFilter;
+    reportBatchFilter = null;
+    const exportHistory = loadExportHistory();
+    let selectNumbers;
+    let excludedNote = "";
+    if (batch) {
+      selectNumbers = reportNumbers.filter((no) => batch.has(no));
+      const excluded = reportNumbers.length - selectNumbers.length;
+      excludedNote = ` — 이번 출력분 ${selectNumbers.length}건만 선택` + (excluded ? ` (그 전에 출력한 ${excluded}건 제외)` : "");
+    } else {
+      const already = reportNumbers.filter((no) => exportHistory[no]);
+      selectNumbers = reportNumbers.filter((no) => !exportHistory[no]);
+      if (already.length) excludedNote = ` — 파일을 이미 만든 ${already.length}건은 체크 안 함 (필요하면 직접 체크)`;
     }
-    statusEl.textContent += ` — ${autoSelectedCount}건 자동 선택됨`;
+    const selectSet = new Set(selectNumbers);
+
+    const candidateList = currentTab === "processed" ? getProcessedDisplayList() : allOrders;
+    for (const order of candidateList) {
+      if (selectSet.has(order.orderNumber)) selectedDhlOrderIds.add(order.id);
+    }
 
     // 처리완료 탭: 리포트에 있는데 불러온 목록에 없는 주문(오래돼서 최근 250건 밖 등)은 주문번호로 직접 조회해
-    // 목록에 추가하고 체크한다 — 안 그러면 조용히 빠진 채 포장대장/수출신고 파일이 만들어진다(실측: #27402 등 4건 누락).
+    // 목록에 추가한다 — 안 그러면 조용히 빠진 채 파일이 만들어진다(실측: #27402 등 4건 누락).
+    // 이번 출력분만 다룰 때는 그 주문들만 조회한다.
+    let found = [];
+    let notFound = [];
     if (currentTab === "processed") {
       const loadedNumbers = new Set(candidateList.map((o) => o.orderNumber));
-      const missing = [...reportOrderNumbers].filter((no) => !loadedNumbers.has(no));
+      const missing = (batch ? selectNumbers : reportNumbers).filter((no) => !loadedNumbers.has(no));
       if (missing.length > 0) {
         render();
         statusEl.textContent += ` — 목록에 없는 ${missing.length}건 조회 중...`;
-        const { found, notFound } = await fetchOrdersByNumber(missing);
+        ({ found, notFound } = await fetchOrdersByNumber(missing));
         processedOrders = mergeOrdersById(processedOrders, found);
         if (processedSearchResults) processedSearchResults = mergeOrdersById(processedSearchResults, found);
-        for (const o of found) selectedDhlOrderIds.add(o.id);
+        for (const o of found) if (selectSet.has(o.orderNumber)) selectedDhlOrderIds.add(o.id);
         if (found.length > 0) await loadProcessedShipmentStatus(found);
-        statusEl.textContent =
-          `${Object.keys(dhlReportMap).length}건 매칭 데이터 로드됨 — ${autoSelectedCount + found.length}건 자동 선택됨` +
-          (found.length ? ` (목록에 없던 ${found.length}건 추가로 불러옴)` : "") +
-          (notFound.length ? ` — ⚠ Shopify에서 못 찾은 주문 ${notFound.length}건: ${notFound.join(", ")}` : "");
-        statusEl.style.color = notFound.length ? "var(--danger)" : "";
       }
     }
+
+    const selectedCount = (currentTab === "processed" ? getProcessedDisplayList() : allOrders).filter(
+      (o) => selectSet.has(o.orderNumber) && selectedDhlOrderIds.has(o.id)
+    ).length;
+    statusEl.textContent =
+      `${reportNumbers.length}건 매칭 데이터 로드됨 — ${selectedCount}건 자동 선택됨` +
+      excludedNote +
+      (found.length ? ` (목록에 없던 ${found.length}건 추가로 불러옴)` : "") +
+      (notFound.length ? ` — ⚠ Shopify에서 못 찾은 주문 ${notFound.length}건: ${notFound.join(", ")}` : "");
+    statusEl.style.color = notFound.length ? "var(--danger)" : "";
 
     dhlReportLoading = false;
     render(); // 매칭 상태 + 체크박스 갱신
@@ -1922,6 +1981,7 @@ async function openStockConfirmModal(targets) {
   // 차감 대상이 될 수 있는(=스킵 예정이 아닌) 주문들의 SKU를 모아 셀메이트에 실제
   // 존재하는지 미리 조회 — 여기 없는 SKU는 매칭 실패로 간주해 직접 고칠 수 있게 한다.
   const nonSkipOrders = targets.filter((order) => {
+    if (processedShipmentMap[order.id]) return false;
     const match = dhlReportMap[order.orderNumber];
     return !(currentTab === "dhl" && (!match || !match.tracking));
   });
@@ -1936,6 +1996,16 @@ async function openStockConfirmModal(targets) {
 
   const rowsHtml = [];
   for (const order of targets) {
+    // 이미 재고차감된 주문은 다시 차감하지 않는다 — 리포트 자동 체크 등으로 섞여 들어와도 두 번 빠지지 않게
+    if (processedShipmentMap[order.id]) {
+      rowsHtml.push(`
+        <tr>
+          <td>${escapeHtml(order.orderNumber)}</td>
+          <td colspan="3" style="color:var(--text-dim);">이미 재고차감 완료 — 제외</td>
+        </tr>
+      `);
+      continue;
+    }
     const match = dhlReportMap[order.orderNumber];
     const willSkip = currentTab === "dhl" && (!match || !match.tracking);
     if (willSkip) {
@@ -2304,6 +2374,15 @@ async function performStockDeduction(targets, overrideMap = new Map()) {
     const match = dhlReportMap[order.orderNumber];
     const statusEl = document.getElementById(`status-${cssId(order.id)}`);
 
+    if (processedShipmentMap[order.id]) {
+      skippedCount++;
+      if (statusEl) {
+        statusEl.textContent = "이미 재고차감 완료 — 스킵";
+        statusEl.className = "status-msg";
+      }
+      continue;
+    }
+
     // "DHL 발송건" 탭(아직 미발송)은 리포트 매칭이 실제 발송 여부의 유일한 증거라 필수.
     // "처리완료" 탭은 이미 Shopify에서 발송완료로 확인된 주문이라 리포트 없이도 진행 가능.
     if (currentTab === "dhl" && (!match || !match.tracking)) {
@@ -2365,7 +2444,7 @@ async function performStockDeduction(targets, overrideMap = new Map()) {
 
   logEl.innerHTML =
     `처리 완료 — 성공 ${successCount}건 / 스킵 ${skippedCount}건 / 실패 ${failedCount}건` +
-    (skippedCount > 0 ? ` <span style="color:var(--danger);">(스킵된 건은 DHL 리포트 업로드 여부를 확인하세요)</span>` : "");
+    (skippedCount > 0 ? ` <span style="color:var(--text-dim);">(스킵: 이미 재고차감된 주문 또는 DHL 리포트 미매칭)</span>` : "");
 
   // 방금 차감된 건이 있으면 "처리완료" 탭의 재고차감 상태 배지도 최신 상태로 갱신
   if (successCount > 0 && currentTab === "processed") {
@@ -2485,8 +2564,10 @@ document.getElementById("origin-modal-confirm").addEventListener("click", () => 
   }
 
   document.getElementById("origin-modal").classList.remove("visible");
+  recordExportHistory(originReviewTargets.map((o) => o.orderNumber));
   exportChulgobon(originReviewTargets);
   exportGmi(originReviewTargets, originMap);
+  render(); // "파일 생성" 표시 갱신
 });
 
 function exportChulgobon(orders) {
