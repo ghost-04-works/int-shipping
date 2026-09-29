@@ -86,7 +86,9 @@ async function main() {
 
   const targetOrderNumbers = await getTargetOrderNumbers();
   if (targetOrderNumbers.length === 0) {
-    console.warn("[DHL 자동화] 처리 대상 주문번호가 없습니다.");
+    // 자동화 작업 없이 DHL 주문 목록을 연 경우(직접 열었거나 작업이 끝난 탭을 새로고침) — 정상 상황이라
+    // warn으로 남기면 chrome://extensions "오류" 목록에 떠서 오류처럼 보이므로 일반 로그로만 남긴다.
+    console.log("[DHL 자동화] 진행 중인 자동화 작업이 없어 아무것도 하지 않습니다.");
     return;
   }
 
