@@ -2454,7 +2454,7 @@ async function performStockDeduction(targets, overrideMap = new Map()) {
 
   // 방금 차감된 건이 있으면 "처리완료" 탭의 재고차감 상태 배지도 최신 상태로 갱신
   if (successCount > 0 && currentTab === "processed") {
-    await loadProcessedShipmentStatus();
+    await loadProcessedShipmentStatus(getProcessedDisplayList());
     render();
   }
 }
