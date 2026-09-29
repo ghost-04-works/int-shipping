@@ -349,9 +349,8 @@ async function runPriceEditOnDetailPage() {
   const assignments = matchItemsToRows(grid, current.items);
 
   if (current.stage === "verify") {
-    const mismatches = assignments.filter(
-      ({ priceInput, item }) => !samePrice(priceInput.value, item.unitPrice)
-    );
+    // 표가 글자로 표시될 수도 있어 입력칸이 아니라 읽어 둔 값(unitPrice)으로 비교한다
+    const mismatches = assignments.filter(({ unitPrice, item }) => !samePrice(unitPrice, item.unitPrice));
     if (mismatches.length === 0) {
       await storageSet({ dhlPriceCurrent: null });
       const { dhlPriceQueue = [] } = await storageGet(["dhlPriceQueue"]);
@@ -365,7 +364,7 @@ async function runPriceEditOnDetailPage() {
     }
     if (current.attempts + 1 >= PRICE_MAX_ATTEMPTS) {
       const detail = mismatches
-        .map(({ priceInput, item }) => `${item.sku || item.title}: ${priceInput.value} (목표 ${formatPrice(item.unitPrice)})`)
+        .map(({ unitPrice, item }) => `${item.sku || item.title}: ${unitPrice ?? "-"} (목표 ${formatPrice(item.unitPrice)})`)
         .join(", ");
       throw new Error(`${current.orderNumber} 가액이 저장되지 않았습니다 — ${detail}`);
     }
@@ -373,12 +372,16 @@ async function runPriceEditOnDetailPage() {
     // 아래 edit 단계로 계속 진행 (재시도)
   }
 
-  for (const { priceInput, rowEl, item } of assignments) {
-    if (priceInput) {
+  // 사람이 하던 방식대로 품목마다 연필 → Item details 창 → UNIT PRICE → UPDATE ORDER, 끝나면 SAVE.
+  // 펼친 표도 선택된 한 행만 입력칸이 생겨서 표 안에서 바로 고치는 건 불안정하다 — 연필이 있으면 항상 창으로 고친다.
+  // 창을 닫으면 표가 다시 그려질 수 있어 품목마다 행을 새로 찾는다.
+  for (const item of current.items) {
+    const [{ priceInput, rowEl }] = matchItemsToRows(pickItemsGrid(), [item]);
+    if (rowEl.querySelector(SELECTORS.itemEditButton)) {
+      await editPriceViaItemModal(rowEl, formatPrice(item.unitPrice), item);
+    } else {
       setInputValue(priceInput, formatPrice(item.unitPrice));
       await sleep(150);
-    } else {
-      await editPriceViaItemModal(rowEl, formatPrice(item.unitPrice), item);
     }
   }
   await sleep(500);
@@ -517,7 +520,12 @@ async function editPriceViaItemModal(rowEl, value, item) {
 // 화면에 Items 표가 둘 이상 그려질 수 있어(요약 표 + 편집 표) 입력칸이 있는 편집 표를 우선한다.
 function pickItemsGrid() {
   const grids = Array.from(document.querySelectorAll(SELECTORS.itemsGrid));
-  return grids.find(hasPriceInputs) ?? grids[0] ?? null;
+  return grids.find(isEditableGrid) ?? grids[0] ?? null;
+}
+
+// 펼친 편집용 표: 행마다 연필(편집) 버튼이 있거나, Unit Price 칸에 입력칸이 있다
+function isEditableGrid(grid) {
+  return !!grid.querySelector(`${SELECTORS.itemsGridRow} ${SELECTORS.itemEditButton}`) || hasPriceInputs(grid);
 }
 
 // Unit Price 칸에 입력칸이 있는 편집용 표인지 (무게/사이즈 칸만 입력칸인 경우와 구분)
@@ -529,15 +537,17 @@ function hasPriceInputs(grid) {
 // Items 영역이 접혀(∨) 있으면 표가 글자로만 된 요약이라 입력칸도, 행별 편집(연필) 버튼도 없다
 // (실측: #28783). "Items" 제목 옆의 펼치기 버튼을 눌러 편집용 표(입력칸 + 연필 버튼)로 바꾼다.
 async function ensureItemsEditable(grid) {
-  if (hasPriceInputs(grid)) return grid;
+  if (isEditableGrid(grid)) return grid;
   const toggle = Array.from(document.querySelectorAll(SELECTORS.sectionToggle)).find(
     (t) => t.closest(".row")?.querySelector(".order-section-heading")?.textContent?.trim().toLowerCase() === "items"
   );
-  if (!toggle) return grid; // 펼치기 버튼이 없으면 그대로 진행(행 편집 버튼이 있으면 Item details 창으로 수정)
+  if (!toggle) return grid; // 펼치기 버튼이 없으면 그대로 진행
+  // 이미 펼쳐져(∧) 있는데 누르면 오히려 접히므로, 접힌(∨) 상태일 때만 누른다
+  if (toggle.querySelector(".fa-chevron-up")) return grid;
   (toggle.querySelector("i.toggle") ?? toggle).click();
   const expanded = await waitFor(() => {
     const g = pickItemsGrid();
-    return g && hasPriceInputs(g) ? g : null;
+    return g && isEditableGrid(g) ? g : null;
   }, 10000);
   if (!expanded) return grid;
   return waitForItemsGrid(); // 펼친 표의 값이 다 채워질 때까지 다시 기다림
@@ -579,7 +589,7 @@ function matchItemsToRows(grid, items) {
       );
     }
     row.used = true;
-    assignments.push({ priceInput: row.priceInput, rowEl: row.rowEl, item });
+    assignments.push({ priceInput: row.priceInput, rowEl: row.rowEl, unitPrice: row.unitPrice, item });
   }
   if (unmatched.length > 0) {
     throw new Error(`DHL Items 표에서 품목을 찾지 못했습니다: ${unmatched.join(", ")}`);
