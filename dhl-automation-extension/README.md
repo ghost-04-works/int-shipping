@@ -148,4 +148,7 @@ DHL(DEC)에도 할인 금액이 들어가긴 하지만 Shopify와 정확히 일�
 
 - 셀렉터(저장된 `dhl_docs/DHL Express Commerce.html` 기준): Items 표 `.ssit-order-detail-grid.order-items`,
   컬럼은 헤더 `th[data-text]`("SKU", "Ship", "Unit Price (USD)")로 찾음(컬럼 순서 변경 대비), 저장 `button.btn-order-save`.
+- **가액만 확인·수정**: int-shipping에서 주문번호를 입력하면 `shopify-orders`의 `search`(`status: "any"`, 취소·발송완료
+  주문 포함)로 주문을 불러와 같은 읽기 → 비교 과정을 거친 뒤, `DHL_AUTOMATE`에 `priceOnly: true`로 가액 수정만 하고
+  라벨 출력/리포트는 건너뛴다(`dhlPriceOnly` → `PRICES_ONLY_DONE` → `DHL_AUTOMATE_PRICES_DONE`). DHL 탭은 결과 확인용으로 열어 둔다.
 - 작업이 끝나면(성공/실패) `dhlTargetOrders`/`dhlPrice*`/`dhlRead*` 저장값을 지운다.

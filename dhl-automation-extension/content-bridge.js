@@ -9,10 +9,11 @@ window.addEventListener("message", (event) => {
 
   const orderNumbers = event.data.orderNumbers ?? [];
   const priceUpdates = event.data.priceUpdates ?? [];
+  const priceOnly = !!event.data.priceOnly; // true면 가액만 수정하고 라벨 출력은 안 함
   const message =
     type === "DHL_AUTOMATE_READ"
       ? { type: "DHL_READ_PRICES_START", orderNumbers }
-      : { type: "DHL_AUTOMATE_START", orderNumbers, priceUpdates };
+      : { type: "DHL_AUTOMATE_START", orderNumbers, priceUpdates, priceOnly };
   chrome.runtime.sendMessage(
     message,
     (response) => {
