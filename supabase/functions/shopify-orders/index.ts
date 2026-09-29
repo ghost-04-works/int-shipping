@@ -1,5 +1,5 @@
 // Supabase Edge Function: shopify-orders
-// VERSION-MARKER: 2026-09-29-search-exact-name
+// VERSION-MARKER: 2026-09-29-search-cancelled-closed
 // ------------------------------------------------------------------
 // Shopify Admin GraphQL API를 대신 호출해주는 프록시.
 // 브라우저에는 Shopify 액세스 토큰을 절대 노출하지 않고,
@@ -216,8 +216,21 @@ async function searchOrders(query: string, status: string = "fulfilled") {
     ? `(name:#${digits} OR name:${digits} OR name:*${digits}*)`
     : `name:*${trimmed}*`;
   const statusPart = statusToSearchQuery(status);
-  const searchQuery = statusPart ? `${namePart} AND ${statusPart}` : namePart;
+  if (status === "any") {
+    // 조건 없는 검색에 취소·보관(closed) 주문이 안 잡히는 경우가 있어(실측: Shopify에서 취소한 #28783이
+    // 조건 없이도, fulfilled/unfulfilled로도 0건) 해당 상태를 명시한 검색을 같이 돌려 합친다.
+    const queries = [namePart, `${namePart} AND status:cancelled`, `${namePart} AND status:closed`];
+    const byId = new Map<string, unknown>();
+    for (const searchQuery of queries) {
+      const data = await shopifyGraphQL(buildOrdersQuery(), { cursor: null, searchQuery });
+      for (const edge of data.orders.edges) {
+        if (!byId.has(edge.node.id)) byId.set(edge.node.id, mapOrderNode(edge.node));
+      }
+    }
+    return Array.from(byId.values());
+  }
 
+  const searchQuery = `${namePart} AND ${statusPart}`;
   const data = await shopifyGraphQL(buildOrdersQuery(), { cursor: null, searchQuery });
   return data.orders.edges.map((edge: any) => mapOrderNode(edge.node));
 }
