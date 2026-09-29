@@ -27,6 +27,8 @@ const SELECTORS = {
   itemsGridHeaderCell: "thead th[data-col-index]",
   itemsGridRow: "tbody tr.k-master-row",
   saveButton: "button.btn-order-save",
+  itemEditButton: "button.grid-button-edit", // Items 행 오른쪽 연필 버튼 → Item details 창
+  itemModal: ".blazored-modal.order-item-create-modal",
   orderDescItem: ".ssit-order-desc-item", // "Reference # 7192060100771" 등 주문 상단 정보
 };
 
@@ -370,9 +372,13 @@ async function runPriceEditOnDetailPage() {
     // 아래 edit 단계로 계속 진행 (재시도)
   }
 
-  for (const { priceInput, item } of assignments) {
-    setInputValue(priceInput, formatPrice(item.unitPrice));
-    await sleep(150);
+  for (const { priceInput, rowEl, item } of assignments) {
+    if (priceInput) {
+      setInputValue(priceInput, formatPrice(item.unitPrice));
+      await sleep(150);
+    } else {
+      await editPriceViaItemModal(rowEl, formatPrice(item.unitPrice), item);
+    }
   }
   await sleep(500);
 
@@ -445,15 +451,24 @@ function readItemRows(grid) {
   const shipCol = findColumnIndex(grid, ITEMS_COLUMN_TEXT.ship);
   if (priceCol == null) throw new Error("Items 표에서 Unit Price 컬럼을 찾지 못했습니다.");
 
+  // 표는 입력칸으로 그려질 때도 있고(저장본 HTML), 글자로만 표시될 때도 있다(실측: DEC에서 직접 수정·저장한
+  // #28783 상세 화면) — 입력칸 값이 없으면 칸에 보이는 글자를 읽는다.
+  const cellValue = (row, col) => {
+    const td = row.querySelector(`td[data-col-index="${col}"]`);
+    if (!td) return "";
+    const inputValue = td.querySelector("input")?.value?.trim();
+    return inputValue || td.textContent?.replace(/\s+/g, " ").trim() || "";
+  };
+
   return Array.from(grid.querySelectorAll(SELECTORS.itemsGridRow)).map((row) => {
-    const name = row.querySelector('td[data-col-index="0"] input')?.value?.trim() ?? "";
-    const sku = row.querySelector(`td[data-col-index="${skuCol}"] input`)?.value?.trim() ?? "";
+    const name = cellValue(row, 0);
+    const sku = skuCol == null ? "" : cellValue(row, skuCol);
     const priceInput = row.querySelector(`td[data-col-index="${priceCol}"] input`);
     // Ship 컬럼은 "<input value=70> of 70" 형태 — 뒤의 " of N"이 주문 수량
     const shipCell = row.querySelector(`td[data-col-index="${shipCol}"]`);
     const qtyMatch = shipCell?.textContent?.match(/of\s*(\d+)/);
     const qty = qtyMatch ? Number(qtyMatch[1]) : Number(shipCell?.querySelector("input")?.value) || null;
-    const priceText = priceInput?.value?.trim() ?? "";
+    const priceText = cellValue(row, priceCol).replace(/[^0-9.\-]/g, "");
     return {
       name,
       sku,
@@ -462,8 +477,50 @@ function readItemRows(grid) {
       normName: norm(name),
       normSku: norm(sku),
       priceInput,
+      rowEl: row,
     };
   });
+}
+
+// 표가 글자로만 표시돼 Unit Price 입력칸이 없을 때: 행의 편집(연필) 버튼 → "Item details" 창에서
+// Unit Price를 바꾸고 "Update order"를 누른다(사람이 수기로 고치던 방식과 같음, 저장본 HTML의 창 구조 기준).
+async function editPriceViaItemModal(rowEl, value, item) {
+  const label = item.sku || item.title;
+  const editBtn = rowEl.querySelector(SELECTORS.itemEditButton);
+  if (!editBtn) throw new Error(`품목 편집 버튼을 찾지 못했습니다(${label}).`);
+  editBtn.click();
+
+  const modal = await waitFor(() => document.querySelector(SELECTORS.itemModal), 8000);
+  if (!modal) throw new Error(`Item details 창이 열리지 않았습니다(${label}).`);
+  await sleep(500);
+
+  const field = Array.from(modal.querySelectorAll(".add-item-input")).find(
+    (el) => el.querySelector(".modal-label")?.textContent?.trim().toLowerCase() === "unit price"
+  );
+  const input = field?.querySelector("input");
+  if (!input) throw new Error(`Item details 창에서 Unit Price 칸을 찾지 못했습니다(${label}).`);
+  setInputValue(input, value);
+  await sleep(300);
+
+  const updateBtn = Array.from(modal.querySelectorAll("button")).find(
+    (b) => b.textContent?.trim().toLowerCase() === "update order"
+  );
+  if (!updateBtn) throw new Error(`Item details 창에서 Update order 버튼을 찾지 못했습니다(${label}).`);
+  updateBtn.click();
+
+  const closed = await waitFor(() => !document.querySelector(SELECTORS.itemModal), 10000);
+  if (!closed) throw new Error(`Update order 후 Item details 창이 닫히지 않았습니다(${label}).`);
+  await sleep(800);
+}
+
+async function waitFor(check, timeout) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const v = check();
+    if (v) return v;
+    await sleep(200);
+  }
+  return null;
 }
 
 function matchItemsToRows(grid, items) {
@@ -482,12 +539,17 @@ function matchItemsToRows(grid, items) {
       (byIndex && !byIndex.used && (sku ? byIndex.normSku === sku : nameMatches(byIndex, title)) && byIndex) ||
       (sku && rows.find((r) => !r.used && r.normSku === sku)) ||
       (!sku && title && rows.find((r) => !r.used && nameMatches(r, title)));
-    if (!row || !row.priceInput) {
+    if (!row) {
       unmatched.push(item.sku || item.title);
       continue;
     }
+    if (!row.priceInput && !row.rowEl.querySelector(SELECTORS.itemEditButton)) {
+      throw new Error(
+        `DHL Items 표에 Unit Price 입력칸도, 품목 편집 버튼도 없어 수정할 수 없습니다(${item.sku || item.title}).`
+      );
+    }
     row.used = true;
-    assignments.push({ priceInput: row.priceInput, item });
+    assignments.push({ priceInput: row.priceInput, rowEl: row.rowEl, item });
   }
   if (unmatched.length > 0) {
     throw new Error(`DHL Items 표에서 품목을 찾지 못했습니다: ${unmatched.join(", ")}`);
