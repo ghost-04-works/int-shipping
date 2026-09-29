@@ -1,0 +1,257 @@
+﻿function focusInput(id) {
+    var el = document.getElementById(id);
+    if (el) {
+        el.focus();
+    }
+}
+
+function focusInputWithClass(selector) {
+    var inputField = document.querySelector(selector);
+    if (inputField) {
+        inputField.focus();
+    }
+}
+
+function focusInputWithoutScrollWithClass(selector) {
+    var inputField = document.querySelector(selector);
+    if (inputField) {
+        inputField.focus({ preventScroll: true });
+    }
+}
+
+function selectInputWithClass(selector) {
+    var inputField = document.querySelector(selector);
+    if (inputField) {
+        inputField.select();
+    }
+}
+
+function blurInput(id) {
+    var el = document.getElementById(id);
+    if (el) {
+        el.blur();
+    }
+}
+
+function getElementPosition(id) {
+    var elem = document.getElementById(id);
+    if (elem) {
+        var rect = elem.getBoundingClientRect();
+        return rect.left + "|" + rect.top + "|" + rect.right + "|" + rect.bottom;
+    }
+    return "";
+}
+
+function ensureShopifyAppBridge(apiKey) {
+    if (!apiKey) {
+        return;
+    }
+
+    var existingMeta = document.querySelector("meta[name='shopify-api-key']");
+    if (existingMeta) {
+        existingMeta.setAttribute('content', apiKey);
+    } else {
+        var meta = document.createElement('meta');
+        meta.setAttribute('name', 'shopify-api-key');
+        meta.setAttribute('content', apiKey);
+        document.head.appendChild(meta);
+    }
+
+    var existingScript = document.querySelector("script[src='https://cdn.shopify.com/shopifycloud/app-bridge.js']");
+    if (existingScript) {
+        return;
+    }
+
+    var script = document.createElement('script');
+    script.src = 'https://cdn.shopify.com/shopifycloud/app-bridge.js';
+    script.async = true;
+    document.head.appendChild(script);
+}
+
+function loadChat() {
+    var tag = document.createElement('script');
+    tag.src = 'https://www.chatbase.co/embed.min.js';
+    tag.id = 'FAgMywXKoSM5OafkoMf8-';
+    tag.type = "text/javascript";
+
+    tag.onload = function () {
+        console.log("Script loaded successfully");
+    }
+
+    tag.onerror = function () {
+        console.error("Failed to load script");
+    }
+
+    document.body.appendChild(tag);
+}
+
+
+window.interopFunctions = {
+    clickElement: function (element) {
+        element.click();
+    },
+
+    pressButton: function (id) {
+        var el = document.getElementById(id);
+        if (el) {
+            el.click();
+        }
+    }
+}
+
+window.getWindowDimensions = function () {
+    return window.innerWidth;
+};
+
+window.clipboardCopy = {
+    copyText: function (codeElement) {
+        navigator.clipboard.writeText(codeElement.textContent).then(function () {
+            console.log("Copied to clipboard!");
+        })
+    }
+}
+
+function closeAllEllipsisOpenPackages() {
+    var allPackages = document.querySelectorAll(".order-packages-right-aligned-button.open");
+
+    for (var i = 0; i < allPackages.length; i++) {
+        var package = allPackages[i];
+        if (package) {
+            package.classList.remove("open");
+        }
+    }
+}
+
+function manageEllipsisOpenPackages(id) {
+    setTimeout(function () {
+        closeAllEllipsisOpenPackages();
+
+        var el = document.getElementById(id);
+        if (!el) {
+            return;
+        }
+
+        el.classList.add("open");
+
+        document.onclick = function () {
+            closeAllEllipsisOpenPackages();
+            document.onclick = null;
+        }
+    }, 200);
+}
+
+function closeEllipsisOpenPackages(id) {
+    var el = document.getElementById(id);
+    if (!el) {
+        return;
+    }
+
+    el.classList.remove("open");
+}
+
+function setFavicon(url) {
+    var link = document.querySelector("link[rel~='icon']");
+    if (!link) {
+        link = document.createElement('link');
+        link.rel = 'icon';
+        document.head.appendChild(link);
+    }
+    link.href = url;
+}
+
+function saveFile(fileName, fileContent) {
+    var link = document.createElement('a');
+    link.download = fileName;
+    link.href = "data:text/plain;charset=utf-8," + encodeURIComponent(fileContent)
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+function selectText(element) {
+    var doc = document
+        , text = doc.getElementById(element)
+        , range, selection
+        ;
+    if (doc.body.createTextRange) { //ms
+        range = doc.body.createTextRange();
+        range.moveToElementText(text);
+        range.select();
+    } else if (window.getSelection) { //all others
+        selection = window.getSelection();
+        range = doc.createRange();
+        range.selectNodeContents(text);
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+}
+
+function playSound(soundUrl) {
+    var audio = new Audio(soundUrl);
+    audio.addEventListener('canplaythrough', function() { audio.play(); });
+}
+
+function initializeMessageListener() {
+    window.addEventListener('message', handleMessage);
+}
+
+function removeMessageListener() {
+    window.removeEventListener('message', handleMessage);
+}
+
+function handleMessage(event) {
+    if (event.data && event.data.type === 'nz-post-authorize') {
+        window.location.href = event.data.url;
+    }
+}
+
+function initializeHotjar() {
+    (function (h, o, t, j, a, r) { h.hj = h.hj || function () { (h.hj.q = h.hj.q || []).push(arguments) }; h._hjSettings = { hjid: 3169068, hjsv: 6 }; a = o.getElementsByTagName('head')[0]; r = o.createElement('script'); r.async = 1; r.src = t + h._hjSettings.hjid + j + h._hjSettings.hjsv; a.appendChild(r); })(window, document, 'https://static.hotjar.com/c/hotjar-', '.js?sv=');
+}
+
+
+function initializeIntercom(scriptContent) {
+    if (!scriptContent || typeof document === "undefined") {
+        return;
+    }
+
+    if (window.ssiIntercomLoaded) {
+        return;
+    }
+
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = scriptContent;
+
+    const scripts = wrapper.querySelectorAll("script");
+    scripts.forEach((srcNode) => {
+        const script = document.createElement("script");
+        if (srcNode.src) {
+            script.src = srcNode.src;
+        }
+        if (srcNode.async) {
+            script.async = true;
+        }
+        if (srcNode.textContent) {
+            script.textContent = srcNode.textContent;
+        }
+        document.body.appendChild(script);
+    });
+
+    window.ssiIntercomLoaded = true;
+}
+
+function openWmsSupportAssistant(supportUrl) {
+    if (!supportUrl) {
+        return;
+    }
+    const assistant = window.aimdoc || window.Agent;
+    if (assistant && typeof assistant.openChat === 'function') {
+        assistant.openChat({ agentId: 'fe3eaf1f-03c3-4d97-bf29-9ed962d008c2' });
+        return;
+    }
+    if (document.querySelector('aimdoc-widget, #ai-assistant')) {
+        window.postMessage({ type: 'aimdoc:openChat', agentId: 'fe3eaf1f-03c3-4d97-bf29-9ed962d008c2' }, '*');
+        return;
+    }
+    window.open(supportUrl, '_blank', 'noopener,noreferrer');
+}

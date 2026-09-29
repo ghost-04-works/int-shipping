@@ -1,0 +1,171 @@
+/*===================================================== */
+/* =Include
+===================================================== */
+/* Dependencies */
+/* styling base class
+===================================================== */
+/*===================================================== */
+/* =Include
+===================================================== */
+/* Dependencies */
+/* =Colors
+===================================================== */
+/* =Fonts
+    ================================================= */
+@font-face {
+  font-family: "Delivery";
+  font-style: normal;
+  font-weight: 700;
+  src: url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/EOT/Delivery_W_Rg.eot") format("eot"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/WOFF2/Delivery_W_Rg.woff2") format("woff2"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/WOFF/Delivery_W_Rg.woff") format("woff"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/Desktop/Delivery_Rg.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Delivery-Bold";
+  font-style: normal;
+  font-weight: 500;
+  src: url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/EOT/Delivery_W_Bd.eot") format("eot"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/WOFF2/Delivery_W_Bd.woff2") format("woff2"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/WOFF/Delivery_W_Bd.woff") format("woff"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/Desktop/Delivery_Bd.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Delivery-Condensed-Blk";
+  font-style: normal;
+  font-weight: 900;
+  src: url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/EOT/Delivery_W_CdBlk.eot") format("eot"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/WOFF2/Delivery_W_CdBlk.woff2") format("woff2"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/WOFF/Delivery_W_CdBlk.woff") format("woff"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/Desktop/Delivery_W_CdBlk.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Delivery-Italic";
+  font-style: normal;
+  font-weight: 900;
+  src: url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/EOT/Delivery_W_It.eot") format("eot"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/WOFF2/Delivery_W_It.woff2") format("woff2"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/WOFF/Delivery_W_It.woff") format("woff"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/delivery/Desktop/Delivery_W_It.ttf") format("truetype");
+}
+@font-face {
+  font-family: "SourceSanPro-Bold";
+  font-style: normal;
+  font-weight: 700;
+  src: url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/source-san-pro/EOT/SourceSansPro_Bold.eot") format("eot"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/source-san-pro/WOFF2/SourceSansPro_Bold.woff2") format("woff2"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/source-san-pro/WOFF/SourceSansPro_Bold.woff") format("woff"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/source-san-pro/Desktop/SourceSansPro_Bold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Starshipit Icons";
+  font-style: normal;
+  font-weight: 700;
+  src: url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/icons-ssi/starshipit-icons.eot") format("eot"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/icons-ssi/starshipit-icons.woff") format("woff"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/icons-ssi/starshipit-icons.ttf") format("truetype");
+}
+@font-face {
+  font-family: "DHL Icons";
+  font-style: normal;
+  font-weight: 700;
+  src: url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/icons-dhl/DHL-icons.eot") format("eot"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/icons-dhl/DHL-icons.woff") format("woff"), url("../../../../_content/Starshipit.Blazor.Shared/static/assets/fonts/icons-dhl/DHL-icons.ttf") format("truetype");
+}
+/* =Typography
+===================================================== */
+/* Font weights */
+/* Font sizes */
+/* Headings*/
+/* =Dimensions
+===================================================== */
+/* Order Grid variables
+===================================================== */
+/* =Layout
+===================================================== */
+/* =Order Tabs
+===================================================== */
+/* =Title bar
+===================================================== */
+/* =Asset paths
+===================================================== */
+/* =Disclaimer modal
+===================================================== */
+/* Browser specific functionality
+===================================================== */
+/* Buttons
+===================================================== */
+/* SSI white button with dark outline and hover*/
+/* SSI dark cancel/close button and hover*/
+/* searching button and hover*/
+/* DHL action button with green background - no hover*/
+/* DHL cancel button with no background and outline - no hover*/
+/* SSI white button with dark outline and hover*/
+/* DHL action button with green background - no hover*/
+/* SSI processing button icon */
+/* DHL processing button icon */
+/* SSI update button in orders grid with hover*/
+/* DHL update button in orders grid - no hover*/
+/* SSI search button with hover*/
+/* DHL delete button in orders grid - no hover*/
+/* SSI logo for On boarding page*/
+/* SSI logo for error page*/
+/* DHL logo for error page*/
+/* eShip logo for error page*/
+/* Choose SSI or DHL main button*/
+/* Choose SSI or DHL main alternative button*/
+/* Choose SSI or DHL cancel button*/
+/* Choose SSI or DHL processing button*/
+/* Choose SSI or DHL processing icon*/
+/* Choose SSI or DHL update button*/
+/* Choose SSI or DHL alt update button*/
+/* Choose SSI or DHL search button*/
+/* Choose SSI or DHL searching button*/
+/* Choose SSI or DHL danger button*/
+/* Choose SSI or DHL danger button - always red*/
+/* Choose SSI or DHL error page*/
+/* New locked feature popup*/
+/* certain action buttons (see US23294) */
+/* Theme
+===================================================== */
+/* =Media Queries
+===================================================== */
+/* Icon Fonts
+===================================================== */
+/* =Media Queries
+===================================================== */
+/* Loading Indicator*/
+.main-loading {
+  position: absolute;
+  top: 45vh;
+  width: 100%;
+  text-align: center;
+}
+
+.spinner {
+  border: 5px solid #E8E8E8;
+  border-top: 5px solid #408B33;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 700ms linear infinite;
+  top: 40%;
+  left: 45%;
+  position: absolute;
+}
+.spinner.small {
+  border: 3px solid #E8E8E8;
+  border-top: 3px solid #408B33;
+  width: 15px;
+  height: 15px;
+  top: 7px;
+  left: unset;
+  right: 5px;
+}
+.spinner.large {
+  width: 70px;
+  height: 70px;
+  left: 35%;
+  margin-top: 25px;
+}
+.spinner.popup {
+  position: relative;
+  top: 0px;
+  left: 0px;
+  border: 5px solid #E8E8E8;
+  border-top: 5px solid #408B33;
+}
+.spinner.address-validation {
+  top: 10%;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}

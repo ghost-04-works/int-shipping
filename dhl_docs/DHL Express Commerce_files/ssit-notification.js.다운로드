@@ -1,0 +1,64 @@
+﻿function requestNotificationPermission() {
+    if (!Notification) {
+        console.log('Desktop notifications are not available in your browser.');
+    }
+
+    if (Notification.permission !== 'granted') {
+        Notification.requestPermission();
+    }
+}
+
+function showPushNotification(message) {
+    if (Notification.permission !== 'granted') {
+        Notification.requestPermission();
+    } else {
+        const options = {
+            body: "New Order(s) assigned to you.",//message,
+            dir: 'auto',
+            icon: '_content/Starshipit.Blazor.Shared/static/assets/images/favicons/ssi_favicon.png',
+            requireInteraction: true,
+            tag: 'ssi-notification'
+        };
+        const notification = new Notification('StarShipIt', options);
+    }
+}
+
+function initializeShipItHubConnection(userName, hubUrl) {
+
+    $.getScript("https://ajax.aspnetcdn.com/ajax/signalr/jquery.signalr-2.2.0.js")
+        .done(function (script, textStatus) {
+
+            $.getScript(hubUrl)
+                .done(function (script, textStatus) {
+                    $.connection.hub.qs = { "UserName": userName, "MachineName": "WebClient" };
+                    $.connection.hub.url = hubUrl;
+
+                    $.connection.hub.disconnected(function ()
+                    {
+                        if ($.connection.hub.lastError)
+                        {
+                            console.log((new Date($.now())).toLocaleTimeString() + " Notification Client Disconnection Error: " + $.connection.hub.lastError.message);
+                        }
+                        setTimeout(async function () { await $.connection.hub.start(); }, 5000); // Restart connection after 5 seconds.
+                    });
+
+                    $.connection.hub.stateChanged(function (state) {
+                        var stateConversion = { 0: 'connecting', 1: 'connected', 2: 'reconnecting', 4: 'disconnected' };
+                        console.log((new Date($.now())).toLocaleTimeString() + " Notification Client State: " + stateConversion[state.newState]);
+                    });
+
+                    var siHub = $.connection.shipItHub;
+
+                    if (siHub != null) {
+                        siHub.client.displayNotification = function (message) {
+                            showPushNotification(message);
+                        }
+                    }
+
+                    $.connection.hub
+                        .start({ waitForPageLoad: false })
+                        .done(function () { console.log("Notification Client Started."); })
+                        .fail(function (jqxhr, settings, exception) { console.log("Hub Start Fail:" + exception); });
+                }).fail(function (jqxhr, settings, exception) { console.log("GetScript Hub Fail:" + exception); });
+        }).fail(function (jqxhr, settings, exception) { console.log("GetScript SignalR Fail:" + exception); });
+}
