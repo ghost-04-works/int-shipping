@@ -299,8 +299,8 @@
   <div id="dhl-label-toolbar" class="toolbar" style="display:none;">
     <button id="dhl-label-print-btn" class="primary">라벨 자동 출력</button>
     <span style="border-left:1px solid var(--border); height:20px;"></span>
-    <input type="text" id="price-check-order-input" placeholder="주문번호 (예: 28795)" style="width:150px;" />
-    <button id="price-check-btn" title="취소된 주문 포함 주문번호로 불러와 DHL 가액만 확인·수정합니다 (라벨 출력 안 함)">가액만 확인·수정</button>
+    <input type="text" id="price-check-order-input" placeholder="주문번호 (비우면 선택 주문)" style="width:170px;" />
+    <button id="price-check-btn" title="주문번호를 넣으면 그 주문(취소된 주문 포함), 비워두면 체크한 주문들의 DHL 가액만 확인·수정합니다 (라벨 출력 안 함)">가액만 확인·수정</button>
     <span id="dhl-label-status" style="font-size:12px; color:var(--text-dim);"></span>
   </div>
 
@@ -1217,8 +1217,22 @@ document.getElementById("price-check-btn").addEventListener("click", async () =>
   const raw = document.getElementById("price-check-order-input").value.trim();
   const digits = raw.replace(/[^0-9]/g, "");
   if (!digits) {
-    statusEl.style.color = "var(--danger)";
-    statusEl.textContent = "주문번호를 입력해주세요.";
+    // 주문번호를 안 넣었으면 체크박스로 선택한 주문들을 일괄 처리 (라벨 자동 출력과 같은 대상: DHL/Group Buy 탭)
+    const selected = allOrders.filter(
+      (o) => (classify(o) === "dhl" || classify(o) === "groupbuy") && selectedDhlOrderIds.has(o.id)
+    );
+    if (selected.length === 0) {
+      statusEl.style.color = "var(--danger)";
+      statusEl.textContent = "주문을 체크박스로 선택하거나 주문번호를 입력해주세요.";
+      return;
+    }
+    declaredPriceOnly = true;
+    pendingLookupOrderNumber = null;
+    declaredPriceTargets = selected;
+    postToExtension(
+      { type: "DHL_AUTOMATE_READ", orderNumbers: selected.map((o) => o.orderNumber) },
+      `선택한 ${selected.length}건 DHL 단가 확인 중...`
+    );
     return;
   }
   statusEl.style.color = "var(--text-dim)";
