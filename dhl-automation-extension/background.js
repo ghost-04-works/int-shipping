@@ -11,6 +11,7 @@ let job = null; // { sourceTabId, sourceWindowId, dhlTabId, orderNumbers, phase 
 function resetJob() {
   job = null;
   chrome.storage.local.remove([
+    "dhlJob",
     "dhlTargetOrders",
     "dhlPriceQueue",
     "dhlPriceCurrent",
@@ -34,6 +35,7 @@ async function notifySource(payload) {
 // 자동화 중인 DHL 탭을 사람이 닫으면 작업을 정리한다 — 안 그러면 "이미 진행 중인 자동화 작업이 있습니다"로
 // 다음 실행이 막히고, 남은 진행 상태가 나중에 DHL 화면을 열 때 다시 돌 수 있다.
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await loadJob();
   if (!job || job.dhlTabId !== tabId) return;
   await notifySource({
     type: "DHL_AUTOMATE_ERROR",
@@ -48,7 +50,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true; // async sendResponse 사용
 });
 
+// MV3 서비스 워커는 잠시 조용하면 크롬이 멈췄다가 다시 깨우는데, 그때 메모리의 job이 사라진다
+// (실측: DHL 페이지를 오가는 사이 사라져 마지막 "완료"가 int-shipping에 전달되지 않고 DHL 탭도 안 닫힘).
+// 그래서 job을 storage에 같이 저장해 두고, 메시지를 처리하기 전에 다시 불러온다.
+async function loadJob() {
+  if (!job) {
+    const { dhlJob } = await chrome.storage.local.get("dhlJob");
+    job = dhlJob ?? null;
+  }
+  return job;
+}
+
+function saveJob() {
+  if (job) chrome.storage.local.set({ dhlJob: job });
+}
+
+// 남아 있는 job이 실제로 진행 중인지 — 너무 오래됐거나 DHL 탭이 이미 없으면 끝난 것으로 본다
+const JOB_STALE_MS = 30 * 60 * 1000;
+async function isJobAlive() {
+  if (!job) return false;
+  if (!job.startedAt || Date.now() - job.startedAt > JOB_STALE_MS) return false;
+  if (!job.dhlTabId) return true; // 탭을 여는 중
+  try {
+    await chrome.tabs.get(job.dhlTabId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function handleMessage(message, sender) {
+  await loadJob();
   switch (message?.type) {
     case "DHL_AUTOMATE_START":
       // 라벨 출력은 printLabels: true가 명시된 요청만 — 표시가 빠진 요청(옛 버전 파일 등)은 거절한다
@@ -68,6 +100,7 @@ async function handleMessage(message, sender) {
 
     case "READ_PROGRESS":
       if (job) job.readDone = (job.readDone ?? 0) + 1;
+      saveJob();
       await notifySource({
         type: "DHL_AUTOMATE_PROGRESS",
         phase: "read",
@@ -82,6 +115,7 @@ async function handleMessage(message, sender) {
 
     case "PRICES_PROGRESS":
       if (job) job.pricesDone = (job.pricesDone ?? 0) + 1;
+      saveJob();
       await notifySource({
         type: "DHL_AUTOMATE_PROGRESS",
         phase: "prices",
@@ -137,6 +171,7 @@ async function startJob(orderNumbers, priceUpdates, priceOnly, sourceTabId, sour
   if (!Array.isArray(orderNumbers) || orderNumbers.length === 0) {
     return { ok: false, error: "orderNumbers가 비어있습니다." };
   }
+  if (job && !(await isJobAlive())) resetJob();
   if (job) {
     return { ok: false, error: "이미 진행 중인 자동화 작업이 있습니다." };
   }
@@ -153,6 +188,8 @@ async function startJob(orderNumbers, priceUpdates, priceOnly, sourceTabId, sour
     phase: "orders",
     pricesTotal: priceQueue.length,
     pricesDone: 0,
+    priceOnly,
+    startedAt: Date.now(),
   };
   if (priceOnly && priceQueue.length === 0) {
     job = null;
@@ -166,15 +203,17 @@ async function startJob(orderNumbers, priceUpdates, priceOnly, sourceTabId, sour
     dhlPrintLabels: !priceOnly, // content-orders.js는 이 값이 true일 때만 라벨을 출력한다
   });
 
+  saveJob();
   const tab = await chrome.tabs.create({ url: DHL_ORDERS_URL });
   job.dhlTabId = tab.id;
+  saveJob();
 
-  await notifySource({
-    type: "DHL_AUTOMATE_PROGRESS",
-    phase: "orders",
-    checked: 0,
-    total: orderNumbers.length,
-  });
+  // 가액 수정이 먼저면 첫 표시도 "가액 수정 중" — 라벨 단계("주문 체크 중")처럼 보이지 않게
+  await notifySource(
+    priceQueue.length > 0
+      ? { type: "DHL_AUTOMATE_PROGRESS", phase: "prices", done: 0, total: priceQueue.length }
+      : { type: "DHL_AUTOMATE_PROGRESS", phase: "orders", checked: 0, total: orderNumbers.length }
+  );
 
   return { ok: true };
 }
@@ -186,11 +225,13 @@ async function startReadJob(orderNumbers, sourceTabId, sourceWindowId) {
   if (!Array.isArray(orderNumbers) || orderNumbers.length === 0) {
     return { ok: false, error: "orderNumbers가 비어있습니다." };
   }
+  if (job && !(await isJobAlive())) resetJob();
   if (job) {
     return { ok: false, error: "이미 진행 중인 자동화 작업이 있습니다." };
   }
 
-  job = { sourceTabId, sourceWindowId, dhlTabId: null, orderNumbers, phase: "read", readDone: 0 };
+  job = { sourceTabId, sourceWindowId, dhlTabId: null, orderNumbers, phase: "read", readDone: 0, startedAt: Date.now() };
+  saveJob();
   await chrome.storage.local.set({
     dhlTargetOrders: [],
     dhlPrintLabels: false,
@@ -203,6 +244,7 @@ async function startReadJob(orderNumbers, sourceTabId, sourceWindowId) {
 
   const tab = await chrome.tabs.create({ url: DHL_ORDERS_URL });
   job.dhlTabId = tab.id;
+  saveJob();
   await notifySource({
     type: "DHL_AUTOMATE_PROGRESS",
     phase: "read",
@@ -232,8 +274,15 @@ async function onReadDone(message) {
 async function onPricesOnlyDone() {
   if (!job) return { ok: false, error: "no active job" };
   await notifySource({ type: "DHL_AUTOMATE_PRICES_DONE", done: job.pricesDone ?? 0 });
+  // 가액 수정이 끝났으면 DHL 탭을 닫고 int-shipping으로 돌아간다
+  const dhlTabId = job.dhlTabId;
   await focusSourceTab();
-  resetJob();
+  resetJob(); // 탭을 닫기 전에 정리해야 onRemoved가 "탭이 닫혀 중단" 오류를 보내지 않는다
+  try {
+    if (dhlTabId) await chrome.tabs.remove(dhlTabId);
+  } catch (err) {
+    console.warn("[DHL 자동화] DHL 탭 닫기 실패", err);
+  }
   return { ok: true };
 }
 
@@ -262,6 +311,7 @@ async function onOrdersDone(message) {
   });
 
   job.phase = "reports";
+  saveJob();
   await chrome.tabs.update(job.dhlTabId, { url: DHL_REPORTS_URL });
   return { ok: true };
 }
