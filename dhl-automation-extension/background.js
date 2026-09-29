@@ -6,8 +6,11 @@ const DHL_REPORTS_URL = "https://app2.dhlexpresscommerce.com/reports";
 // 진행 중인 자동화 작업의 상태. 한 번에 하나의 작업만 처리한다(2단계 스코프).
 let job = null; // { sourceTabId, sourceWindowId, dhlTabId, orderNumbers, phase }
 
+// 작업이 끝나면(성공/실패 모두) content script용 상태도 지운다 — 남아 있으면 나중에 사용자가
+// 직접 /orders를 열었을 때 지난 작업의 주문으로 자동화가 다시 돌 수 있다.
 function resetJob() {
   job = null;
+  chrome.storage.local.remove(["dhlTargetOrders", "dhlPriceQueue", "dhlPriceCurrent"]);
 }
 
 async function notifySource(payload) {
@@ -27,7 +30,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message, sender) {
   switch (message?.type) {
     case "DHL_AUTOMATE_START":
-      return startJob(message.orderNumbers, sender.tab?.id, sender.tab?.windowId);
+      return startJob(message.orderNumbers, message.priceUpdates, sender.tab?.id, sender.tab?.windowId);
+
+    case "PRICES_PROGRESS":
+      if (job) job.pricesDone = (job.pricesDone ?? 0) + 1;
+      await notifySource({
+        type: "DHL_AUTOMATE_PROGRESS",
+        phase: "prices",
+        orderNumber: message.orderNumber,
+        done: job?.pricesDone ?? 0,
+        total: job?.pricesTotal ?? 0,
+      });
+      return { ok: true };
 
     case "ORDERS_PROGRESS":
       await notifySource({
@@ -68,7 +82,9 @@ async function handleMessage(message, sender) {
   }
 }
 
-async function startJob(orderNumbers, sourceTabId, sourceWindowId) {
+// priceUpdates: [{ orderNumber, items: [{ sku, title, unitPrice }] }] — 라벨 출력 전에
+// DHL 주문 상세 화면에서 Unit Price를 이 값으로 바꿀 주문들(없으면 가액 수정 없이 바로 라벨 출력)
+async function startJob(orderNumbers, priceUpdates, sourceTabId, sourceWindowId) {
   if (!Array.isArray(orderNumbers) || orderNumbers.length === 0) {
     return { ok: false, error: "orderNumbers가 비어있습니다." };
   }
@@ -76,8 +92,24 @@ async function startJob(orderNumbers, sourceTabId, sourceWindowId) {
     return { ok: false, error: "이미 진행 중인 자동화 작업이 있습니다." };
   }
 
-  job = { sourceTabId, sourceWindowId, dhlTabId: null, orderNumbers, phase: "orders" };
-  await chrome.storage.local.set({ dhlTargetOrders: orderNumbers });
+  const priceQueue = Array.isArray(priceUpdates)
+    ? priceUpdates.filter((p) => orderNumbers.includes(p.orderNumber) && p.items?.length > 0)
+    : [];
+
+  job = {
+    sourceTabId,
+    sourceWindowId,
+    dhlTabId: null,
+    orderNumbers,
+    phase: "orders",
+    pricesTotal: priceQueue.length,
+    pricesDone: 0,
+  };
+  await chrome.storage.local.set({
+    dhlTargetOrders: orderNumbers,
+    dhlPriceQueue: priceQueue,
+    dhlPriceCurrent: null,
+  });
 
   const tab = await chrome.tabs.create({ url: DHL_ORDERS_URL });
   job.dhlTabId = tab.id;

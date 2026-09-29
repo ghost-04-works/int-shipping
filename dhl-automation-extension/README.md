@@ -126,3 +126,21 @@ int-shipping 탭·창에 자동으로 포커스를 돌려준다. 사용자가 �
 - **원산지 확인 모달의 "확인 후 엑셀 생성"**: 통관 신고서(GMI)에 들어갈 원산지 코드는 사람이 검토해야 함
 - PDF 라벨 저장 경로 지정 (크롬 기본 다운로드 폴더 사용)
 - Pickup(수거예약) 페이지 자동화
+
+## 신고 가액(Unit Price) 자동 수정 (2026-09-29)
+
+Shopify 할인은 DHL Express Commerce에 반영되지 않아(DHL은 등록된 제품 가액을 씀) 라벨/인보이스와
+수출신고 가액이 정가로 나가는 문제가 있어, 라벨 출력 전에 DHL 주문의 Unit Price를 고치는 단계를 추가함.
+
+- int-shipping "라벨 자동 출력" → **"DHL 신고 가액 확인"** 창에서 품목별 단가(USD)를 확정.
+  기본값은 `shopify-orders` 함수가 주는 `discountedUnitPrice`(없으면 `price`). 칸을 비우면 그 품목은 DHL 값 유지.
+  확정한 값은 `DHL_AUTOMATE` 메시지의 `priceUpdates`로 넘어가고, int-shipping localStorage(`dhlDeclaredPrices`)에도
+  남아 GMI 수출신고 엑셀 단가로 쓰인다(두 서류 금액 일치).
+- `background.js`가 `priceUpdates`를 `chrome.storage.local.dhlPriceQueue`에 넣고, `content-orders.js`가
+  라벨 체크 전에 주문마다: 목록에서 주문번호 링크로 상세 화면(`/orders/<탭>/<id>`) 이동 → Items 표에서
+  SKU(없으면 품목명)로 행을 찾아 Unit Price 입력칸 수정 → `Save` → 새로고침 후 값이 실제로 저장됐는지 확인
+  (안 됐으면 1회 재시도) → 목록으로 복귀. 전부 끝나면 기존 라벨 출력 흐름으로 진행.
+- 품목을 못 찾거나 저장 확인에 실패하면 **라벨을 출력하지 않고 중단**한다(잘못된 가액으로 라벨이 나가는 것 방지).
+- 셀렉터(저장된 `dhl_docs/DHL Express Commerce.html` 기준): Items 표 `.ssit-order-detail-grid.order-items`,
+  컬럼은 헤더 `th[data-text]`("SKU", "Unit Price (USD)")로 찾음(컬럼 순서 변경 대비), 저장 `button.btn-order-save`.
+- 작업이 끝나면(성공/실패) `dhlTargetOrders`/`dhlPriceQueue`/`dhlPriceCurrent`를 지운다.
