@@ -309,7 +309,7 @@
     <input type="file" id="dhl-report-input" accept=".xlsx" />
     <span id="dhl-report-status" style="font-size:12px; color:var(--text-dim);"></span>
     <button id="dhl-process-btn" class="primary">선택 주문 재고차감</button>
-    <button id="dhl-export-btn">출고분/GMI 엑셀 생성</button>
+    <button id="dhl-export-btn" disabled title="DHL 리포트를 먼저 업로드해주세요">포장대장/수출신고 파일 생성</button>
     <button id="manual-deduct-open-btn">수동 재고차감</button>
   </div>
   <div id="dhl-log" style="font-size:12px; margin-bottom:10px;"></div>
@@ -703,6 +703,12 @@ function render() {
     currentTab === "dhl" || currentTab === "groupbuy" ? "flex" : "none";
   document.getElementById("processed-search-toolbar").style.display =
     currentTab === "processed" ? "flex" : "none";
+  // 포장대장(송장번호)과 수출신고 파일(송장번호·무게·배송비)은 DHL 리포트가 있어야 만들 수 있다 —
+  // 리포트 없이 누르면 송장번호 빈 포장대장과 내용 0건 수출신고 파일이 나와서 아예 못 누르게 막는다.
+  const exportBtn = document.getElementById("dhl-export-btn");
+  const hasReport = Object.keys(dhlReportMap).length > 0;
+  exportBtn.disabled = !hasReport;
+  exportBtn.title = hasReport ? "" : "DHL 리포트를 먼저 업로드해주세요";
 
   if (currentTab === "processed") {
     const container = document.getElementById("table-container");
@@ -1683,7 +1689,7 @@ window.addEventListener("message", (event) => {
 });
 
 // 리포트 xlsx가 함께 왔으면(확장이 다운로드를 가로채 캡처한 경우) "처리완료" 탭으로 전환해서
-// 자동으로 업로드 input에 넣고, 매칭 결과까지 반영되면 "출고분/GMI 엑셀 생성"을 눌러
+// 자동으로 업로드 input에 넣고, 매칭 결과까지 반영되면 "포장대장/수출신고 파일 생성"을 눌러
 // 원산지 확인 모달을 띄운다. 재고차감/실제 엑셀 생성(모달의 "확인 후 엑셀 생성")은
 // 재고·통관 서류에 영향을 주는 동작이라 사람이 검토 후 직접 눌러야 하므로 자동 클릭하지 않는다.
 async function handleDhlAutomateDone(msg, statusEl, btn) {
@@ -1813,6 +1819,8 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
     render(); // 매칭 상태 + 체크박스 갱신
   } catch (err) {
     statusEl.textContent = "파싱 실패: " + err.message;
+    dhlReportMap = {};
+    render(); // 리포트가 없으니 포장대장/수출신고 파일 생성 버튼을 다시 막는다
   }
 });
 
@@ -2337,6 +2345,10 @@ function applyDataBorders(ws, startRow, endRow, startCol, endCol, leftAlignCols 
 let originReviewTargets = [];
 
 document.getElementById("dhl-export-btn").addEventListener("click", async () => {
+  if (Object.keys(dhlReportMap).length === 0) {
+    alert("DHL 리포트를 먼저 업로드해주세요.");
+    return;
+  }
   const sourceList = currentTab === "processed" ? getProcessedDisplayList() : allOrders.filter((o) => classify(o) === "dhl");
   let targets = sourceList.filter((o) => selectedDhlOrderIds.has(o.id));
   if (targets.length === 0) {
