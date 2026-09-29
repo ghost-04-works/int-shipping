@@ -30,6 +30,18 @@ async function notifySource(payload) {
   }
 }
 
+// 자동화 중인 DHL 탭을 사람이 닫으면 작업을 정리한다 — 안 그러면 "이미 진행 중인 자동화 작업이 있습니다"로
+// 다음 실행이 막히고, 남은 진행 상태가 나중에 DHL 화면을 열 때 다시 돌 수 있다.
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  if (!job || job.dhlTabId !== tabId) return;
+  await notifySource({
+    type: "DHL_AUTOMATE_ERROR",
+    phase: job.phase,
+    error: "DHL 탭이 닫혀 자동화를 중단했습니다.",
+  });
+  resetJob();
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handleMessage(message, sender).then(sendResponse);
   return true; // async sendResponse 사용
