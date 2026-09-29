@@ -1321,7 +1321,7 @@ function openDeclaredPriceModal(targets, dhlResults) {
     if (!result || result.notFound) {
       notFoundOrders.push(order.orderNumber);
       rowsHtml.push(`<tr class="order-start price-missing"><td>${escapeHtml(order.orderNumber)}</td>
-        <td colspan="7" style="color:var(--danger);">DHL 주문 목록(New 탭)에서 찾지 못했습니다 — 이미 라벨을 출력해 다른 탭으로 넘어간 주문일 수 있습니다. 가액 확인·수정 없이 진행됩니다.</td></tr>`);
+        <td colspan="7" style="color:var(--danger);">DHL 주문 목록(New 탭)에서 찾지 못했습니다 — 이미 라벨을 출력해 다른 탭으로 넘어간 주문일 수 있습니다. 가액 확인·수정 없이 진행됩니다.${result?.scan ? `<br><span style="color:var(--text-dim); font-size:11px;">${escapeHtml(result.scan)}</span>` : ""}</td></tr>`);
       order.lineItems.forEach((li, idx) => {
         declaredPriceLines.push({ order, idx, li, shopify: defaultDeclaredUnitPrice(li), dhlRow: null, rowIndex: -1, status: "notfound" });
       });
