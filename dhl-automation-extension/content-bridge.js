@@ -6,8 +6,9 @@ window.addEventListener("message", (event) => {
   if (event.data?.type !== "DHL_AUTOMATE") return;
 
   const orderNumbers = event.data.orderNumbers ?? [];
+  const priceUpdates = event.data.priceUpdates ?? [];
   chrome.runtime.sendMessage(
-    { type: "DHL_AUTOMATE_START", orderNumbers },
+    { type: "DHL_AUTOMATE_START", orderNumbers, priceUpdates },
     (response) => {
       if (chrome.runtime.lastError) {
         postToPage({

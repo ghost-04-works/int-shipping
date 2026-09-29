@@ -250,6 +250,9 @@
     text-transform: uppercase;
   }
   .origin-table tr.missing input { border-color: var(--danger); }
+  .origin-table input.price-input { width: 80px; text-transform: none; }
+  .origin-table tr.order-start td { border-top: 2px solid var(--border); }
+  .origin-table .price-original { color: var(--text-dim); text-decoration: line-through; }
 </style>
 </head>
 <body>
@@ -389,6 +392,29 @@
     <div class="modal-actions">
       <button id="origin-modal-cancel">취소</button>
       <button class="primary" id="origin-modal-confirm">확인 후 엑셀 생성</button>
+    </div>
+  </div>
+</div>
+
+<div id="declared-price-modal" class="modal-overlay">
+  <div class="modal-box origin-modal-box" style="width:760px;">
+    <h2>DHL 신고 가액 확인 — 라벨 출력 전</h2>
+    <p style="font-size:12px; color:var(--text-dim); margin-top:-8px;">
+      입력한 단가(USD)로 DHL 주문의 Unit Price를 바꾼 뒤 라벨을 출력하고, 같은 값이 GMI 수출신고 엑셀에도 들어갑니다.
+      할인 적용 단가가 기본으로 채워져 있습니다. 칸을 비우면 그 품목은 DHL 값을 그대로 둡니다.
+    </p>
+    <div style="max-height:55vh; overflow-y:auto;">
+      <table class="origin-table">
+        <thead>
+          <tr><th>주문번호</th><th>품목</th><th>SKU</th><th>수량</th><th>정가</th><th>신고 단가</th><th>합계</th></tr>
+        </thead>
+        <tbody id="declared-price-table-body"></tbody>
+      </table>
+    </div>
+    <div class="modal-error" id="declared-price-modal-error"></div>
+    <div class="modal-actions">
+      <button id="declared-price-cancel">취소</button>
+      <button class="primary" id="declared-price-confirm">확인 후 가액 수정 + 라벨 출력</button>
     </div>
   </div>
 </div>
@@ -1093,7 +1119,6 @@ let dhlAutomateTimeoutId = null;
 
 document.getElementById("dhl-label-print-btn").addEventListener("click", () => {
   const statusEl = document.getElementById("dhl-label-status");
-  const btn = document.getElementById("dhl-label-print-btn");
   // Group Buy 탭에서도 이 버튼을 쓸 수 있어서, dhl/groupbuy 두 분류 모두에서 선택된 걸 모은다
   const targets = allOrders.filter(
     (o) => (classify(o) === "dhl" || classify(o) === "groupbuy") && selectedDhlOrderIds.has(o.id)
@@ -1105,7 +1130,145 @@ document.getElementById("dhl-label-print-btn").addEventListener("click", () => {
     return;
   }
 
-  const orderNumbers = targets.map((o) => o.orderNumber);
+  statusEl.textContent = "";
+  openDeclaredPriceModal(targets);
+});
+
+// ── DHL 신고 가액 확인 ─────────────────────────────────────────────
+// Shopify 할인은 DHL에 반영되지 않아(DHL은 등록된 제품 가액을 씀) 라벨 출력 전에 DHL 주문의
+// Unit Price를 할인 적용 단가로 바꿔야 한다. 여기서 확정한 단가를 확장 프로그램에 넘겨 DHL에서
+// 고치게 하고, 같은 값을 localStorage에 남겨 GMI 수출신고 엑셀에서도 쓴다(두 서류 금액 일치).
+const DECLARED_PRICES_KEY = "dhlDeclaredPrices";
+const DECLARED_PRICES_TTL_MS = 60 * 24 * 60 * 60 * 1000; // 60일 지난 기록은 정리
+let declaredPriceTargets = [];
+
+// Shopify 할인(자동 할인·코드 할인 모두)이 반영된 단가. shopify-orders 함수가
+// discountedUnitPrice를 넘겨주지 않으면 price로 대체한다.
+function defaultDeclaredUnitPrice(li) {
+  const v = li.discountedUnitPrice ?? li.price;
+  return v === undefined || v === null || v === "" ? null : Number(v);
+}
+
+function loadDeclaredPrices() {
+  try {
+    const all = JSON.parse(localStorage.getItem(DECLARED_PRICES_KEY) || "{}");
+    const now = Date.now();
+    for (const k of Object.keys(all)) {
+      if (!all[k]?.savedAt || now - all[k].savedAt > DECLARED_PRICES_TTL_MS) delete all[k];
+    }
+    return all;
+  } catch {
+    return {};
+  }
+}
+
+function saveDeclaredPrices(entries) {
+  try {
+    const all = loadDeclaredPrices();
+    for (const [orderNumber, items] of Object.entries(entries)) {
+      all[orderNumber] = { savedAt: Date.now(), items };
+    }
+    localStorage.setItem(DECLARED_PRICES_KEY, JSON.stringify(all));
+  } catch (err) {
+    console.warn("신고 가액 저장 실패", err);
+  }
+}
+
+// GMI 엑셀에 쓸 단가: DHL에 넣은 신고 단가가 있으면 그 값, 없으면 Shopify 단가.
+// 라인 순서(idx)와 SKU가 둘 다 맞을 때만 쓴다(주문이 수정돼 품목이 바뀐 경우 대비).
+function gmiUnitPrice(order, li, idx, declared) {
+  const saved = declared[order.orderNumber]?.items?.[idx];
+  if (saved && (saved.sku || "") === (li.sku || "") && saved.unitPrice !== null && saved.unitPrice !== undefined) {
+    return saved.unitPrice;
+  }
+  return li.price || 0;
+}
+
+function openDeclaredPriceModal(targets) {
+  declaredPriceTargets = targets;
+  const declared = loadDeclaredPrices();
+  const rowsHtml = [];
+  for (const order of targets) {
+    order.lineItems.forEach((li, idx) => {
+      const saved = declared[order.orderNumber]?.items?.[idx];
+      const value = saved && (saved.sku || "") === (li.sku || "") ? saved.unitPrice : defaultDeclaredUnitPrice(li);
+      const original = li.price !== undefined && li.price !== null && Number(li.price) !== Number(value) ? li.price : "";
+      rowsHtml.push(`
+        <tr class="${idx === 0 ? "order-start" : ""}">
+          <td>${idx === 0 ? escapeHtml(order.orderNumber) : ""}</td>
+          <td>${escapeHtml(li.title)}</td>
+          <td>${escapeHtml(li.sku || "SKU 없음")}</td>
+          <td>${li.quantity}</td>
+          <td class="price-original">${original === "" ? "" : escapeHtml(Number(original).toFixed(2))}</td>
+          <td><input type="number" step="0.01" min="0" class="price-input"
+                data-order-id="${escapeHtml(order.id)}" data-idx="${idx}" data-qty="${li.quantity}"
+                value="${value === null || value === undefined ? "" : Number(value).toFixed(2)}" /></td>
+          <td class="price-line-total"></td>
+        </tr>
+      `);
+    });
+  }
+  const tbody = document.getElementById("declared-price-table-body");
+  tbody.innerHTML = rowsHtml.join("");
+  tbody.querySelectorAll(".price-input").forEach((input) => {
+    input.addEventListener("input", () => updateDeclaredLineTotal(input));
+    updateDeclaredLineTotal(input);
+  });
+  document.getElementById("declared-price-modal-error").textContent = "";
+  document.getElementById("declared-price-modal").classList.add("visible");
+}
+
+function updateDeclaredLineTotal(input) {
+  const cell = input.closest("tr").querySelector(".price-line-total");
+  const v = input.value.trim();
+  cell.textContent = v === "" ? "DHL 값 유지" : (parseFloat(v) * Number(input.dataset.qty)).toFixed(2);
+}
+
+document.getElementById("declared-price-cancel").addEventListener("click", () => {
+  document.getElementById("declared-price-modal").classList.remove("visible");
+});
+
+document.getElementById("declared-price-confirm").addEventListener("click", () => {
+  const errorEl = document.getElementById("declared-price-modal-error");
+  const byOrderId = new Map(declaredPriceTargets.map((o) => [o.id, o]));
+  const entries = {}; // orderNumber -> [{ sku, title, unitPrice }] (라인 순서 그대로)
+  let invalid = false;
+
+  document.querySelectorAll("#declared-price-table-body .price-input").forEach((input) => {
+    const order = byOrderId.get(input.dataset.orderId);
+    const li = order.lineItems[Number(input.dataset.idx)];
+    const raw = input.value.trim();
+    const unitPrice = raw === "" ? null : Math.round(parseFloat(raw) * 100) / 100;
+    if (raw !== "" && (!Number.isFinite(unitPrice) || unitPrice < 0)) {
+      input.style.borderColor = "var(--danger)";
+      invalid = true;
+    } else {
+      input.style.borderColor = "";
+    }
+    (entries[order.orderNumber] ||= [])[Number(input.dataset.idx)] = {
+      sku: li.sku || "",
+      title: li.title,
+      unitPrice,
+    };
+  });
+
+  if (invalid) {
+    errorEl.textContent = "단가가 올바르지 않은 칸이 있습니다.";
+    return;
+  }
+
+  saveDeclaredPrices(entries);
+  document.getElementById("declared-price-modal").classList.remove("visible");
+
+  const priceUpdates = Object.entries(entries)
+    .map(([orderNumber, items]) => ({ orderNumber, items: items.filter((it) => it.unitPrice !== null) }))
+    .filter((p) => p.items.length > 0);
+  startDhlAutomation(declaredPriceTargets.map((o) => o.orderNumber), priceUpdates);
+});
+
+function startDhlAutomation(orderNumbers, priceUpdates) {
+  const statusEl = document.getElementById("dhl-label-status");
+  const btn = document.getElementById("dhl-label-print-btn");
   btn.disabled = true;
   statusEl.style.color = "var(--text-dim)";
   statusEl.textContent = `확장 프로그램에 ${orderNumbers.length}건 전달 중...`;
@@ -1117,8 +1280,8 @@ document.getElementById("dhl-label-print-btn").addEventListener("click", () => {
     btn.disabled = false;
   }, 8000);
 
-  window.postMessage({ type: "DHL_AUTOMATE", orderNumbers }, "*");
-});
+  window.postMessage({ type: "DHL_AUTOMATE", orderNumbers, priceUpdates }, "*");
+}
 
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
@@ -1131,7 +1294,9 @@ window.addEventListener("message", (event) => {
 
   if (msg.type === "DHL_AUTOMATE_PROGRESS") {
     statusEl.style.color = "var(--text-dim)";
-    if (msg.phase === "orders") {
+    if (msg.phase === "prices") {
+      statusEl.textContent = `DHL 신고 가액 수정 중: ${msg.done}/${msg.total} (${msg.orderNumber} 완료)`;
+    } else if (msg.phase === "orders") {
       if (msg.labelsTriggered) {
         statusEl.textContent =
           msg.labelDownloadConfirmed === false
@@ -1963,6 +2128,7 @@ function exportChulgobon(orders) {
 }
 
 function exportGmi(orders, originMap) {
+  const declared = loadDeclaredPrices();
   const header = [
     "AWB NO", "구매자", "목적국", "CT\n(WB)", "총중량\n(WB)", "수량", "단가", "금액", "총신고금액\n(WB)",
     "신고품명", "HS CODE\n(품목별)", "모델명\n(규격)", "인도조건", "화폐단위", "환급유무", "원산지",
@@ -1991,7 +2157,8 @@ function exportGmi(orders, originMap) {
     let firstRow = true;
 
     itemLines.forEach((li, idx) => {
-      const amount = (li.price || 0) * li.quantity;
+      const unitPrice = gmiUnitPrice(order, li, idx, declared);
+      const amount = Math.round(unitPrice * li.quantity * 100) / 100;
       blockTotal += amount;
       rows.push([
         firstRow ? match.tracking || "" : "",
@@ -2000,7 +2167,7 @@ function exportGmi(orders, originMap) {
         firstRow ? match.ct || "1" : "",
         firstRow ? match.weight || "" : "",
         li.quantity,
-        li.price || "",
+        unitPrice || "",
         amount || "",
         "",
         "KEYBOARD PARTS",
