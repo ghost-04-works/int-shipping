@@ -1312,6 +1312,8 @@ function openDeclaredPriceModal(targets, dhlResults) {
   declaredPriceLines = [];
   const rowsHtml = [];
   let mismatchCount = 0;
+  let missingCount = 0; // Shopify엔 있는데 DHL에서 짝을 못 찾은 품목
+  let extraCount = 0; // DHL엔 있는데 Shopify에 없는 품목
   const mismatchOrders = new Set();
   const notFoundOrders = [];
   const hasDiscountField = targets.some((o) => o.lineItems.some((li) => li.discountedUnitPrice !== undefined));
@@ -1335,6 +1337,7 @@ function openDeclaredPriceModal(targets, dhlResults) {
       const rowIndex = lineToRow[idx];
       const dhlRow = rowIndex >= 0 ? rows[rowIndex] : null;
       const status = !dhlRow ? "missing" : samePrice(shopify, dhlRow.unitPrice) ? "match" : "mismatch";
+      if (status === "missing") missingCount++;
       const lineNo = declaredPriceLines.length;
       declaredPriceLines.push({ order, idx, li, shopify, dhlRow, rowIndex, status });
       if (status === "mismatch") {
@@ -1396,6 +1399,7 @@ function openDeclaredPriceModal(targets, dhlResults) {
       `);
     });
 
+    extraCount += extraRows.length;
     for (const i of extraRows) {
       const r = rows[i];
       rowsHtml.push(`<tr class="price-missing"><td></td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.sku || "")}</td>
@@ -1418,16 +1422,18 @@ function openDeclaredPriceModal(targets, dhlResults) {
 
   const summary = document.getElementById("declared-price-summary");
   summary.innerHTML = `
-    <span style="color:${mismatchCount || notFoundOrders.length ? "var(--danger)" : "var(--domestic)"}; font-weight:600;">
+    <span style="color:${mismatchCount || notFoundOrders.length || missingCount || extraCount ? "var(--danger)" : "var(--domestic)"}; font-weight:600;">
       ${mismatchCount
         ? `불일치 ${mismatchCount}개 품목 (${mismatchOrders.size}건 주문)`
         : notFoundOrders.length === targets.length
           ? "DHL에서 주문을 찾지 못해 비교하지 못했습니다"
-          : notFoundOrders.length
-            ? "DHL에서 찾은 주문은 모두 Shopify와 일치합니다"
+          : notFoundOrders.length || missingCount || extraCount
+            ? "DHL과 짝이 맞는 품목은 모두 Shopify와 일치합니다"
             : "모든 품목이 Shopify와 일치합니다"}
     </span>
     ${notFoundOrders.length ? `<span style="color:var(--danger);">DHL에서 못 찾은 주문: ${escapeHtml(notFoundOrders.join(", "))}</span>` : ""}
+    ${missingCount ? `<span style="color:var(--danger);">DHL에 없는 품목 ${missingCount}개</span>` : ""}
+    ${extraCount ? `<span style="color:var(--danger);">Shopify에 없는 DHL 품목 ${extraCount}개</span>` : ""}
     ${mismatchCount ? `<label style="font-size:12px;"><input type="checkbox" id="declared-only-mismatch" checked /> 불일치만 보기</label>` : ""}
     ${anySelectable ? `<button type="button" id="declared-all-discount"${hasDiscountField ? "" : " disabled"}>전체 할인가로</button>
       <button type="button" id="declared-all-original">전체 정가로</button>
