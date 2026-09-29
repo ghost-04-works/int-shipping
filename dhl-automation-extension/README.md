@@ -126,3 +126,26 @@ int-shipping 탭·창에 자동으로 포커스를 돌려준다. 사용자가 �
 - **원산지 확인 모달의 "확인 후 엑셀 생성"**: 통관 신고서(GMI)에 들어갈 원산지 코드는 사람이 검토해야 함
 - PDF 라벨 저장 경로 지정 (크롬 기본 다운로드 폴더 사용)
 - Pickup(수거예약) 페이지 자동화
+
+## 신고 가액(Unit Price) 확인·수정 (2026-09-29)
+
+DHL(DEC)에도 할인 금액이 들어가긴 하지만 Shopify와 정확히 일치하지 않는 경우가 많아(예: 3.20 → 3.21,
+68.80 → 69.06) 담당자가 주문마다 확인·수정하던 작업을 자동화함. 흐름은 "읽기 → 비교·선택 → 수정 + 라벨 출력" 2단계.
+
+1. **읽기** — int-shipping "라벨 자동 출력" → `DHL_AUTOMATE_READ` → `background.js`가 `DHL_READ_PRICES_START` 작업 시작.
+   `content-orders.js`가 주문마다 목록에서 주문번호 링크로 상세 화면(`/orders/<탭>/<id>`)을 열어 Items 표의
+   품목명/SKU/수량(Ship 컬럼 "of N")/Unit Price를 읽어 `dhlReadResults`에 모은다(아무것도 수정하지 않음).
+   목록에서 못 찾은 주문은 `notFound`로 기록. 다 읽으면 `READ_DONE` → int-shipping에 `DHL_AUTOMATE_READ_DONE`,
+   읽기용 DHL 탭은 닫고 int-shipping 탭으로 포커스 복귀.
+2. **비교·선택** — int-shipping "DHL 신고 가액 확인" 창에서 Shopify 할인 적용 단가(`shopify-orders` 함수의
+   `discountedUnitPrice`, 없으면 `price`)와 DHL 단가를 비교. 불일치 품목마다 **Shopify에 맞춤 / DHL 값 유지 / 직접 입력**
+   선택(일괄 버튼 있음). 수량 불일치, DHL에 없는 품목, Shopify에 없는 DHL 품목, DHL에서 못 찾은 주문도 표시.
+   최종 단가는 int-shipping localStorage(`dhlDeclaredPrices`)에 남아 GMI 수출신고 엑셀 단가로 쓰인다(두 서류 금액 일치).
+3. **수정 + 라벨 출력** — 최종 단가가 DHL 값과 다른 품목만 `priceUpdates`(`rowIndex` 포함)로 `DHL_AUTOMATE`에 넘긴다.
+   `content-orders.js`가 해당 주문 상세 화면에서 Unit Price 입력칸 수정 → `Save` → 새로고침 후 값이 실제로
+   저장됐는지 확인(안 됐으면 1회 재시도) → 목록 복귀. 전부 끝나면 기존 라벨 출력 흐름으로 진행.
+   품목을 못 찾거나 저장 확인에 실패하면 **라벨을 출력하지 않고 중단**한다.
+
+- 셀렉터(저장된 `dhl_docs/DHL Express Commerce.html` 기준): Items 표 `.ssit-order-detail-grid.order-items`,
+  컬럼은 헤더 `th[data-text]`("SKU", "Ship", "Unit Price (USD)")로 찾음(컬럼 순서 변경 대비), 저장 `button.btn-order-save`.
+- 작업이 끝나면(성공/실패) `dhlTargetOrders`/`dhlPrice*`/`dhlRead*` 저장값을 지운다.

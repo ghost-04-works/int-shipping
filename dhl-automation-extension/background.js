@@ -6,8 +6,18 @@ const DHL_REPORTS_URL = "https://app2.dhlexpresscommerce.com/reports";
 // 진행 중인 자동화 작업의 상태. 한 번에 하나의 작업만 처리한다(2단계 스코프).
 let job = null; // { sourceTabId, sourceWindowId, dhlTabId, orderNumbers, phase }
 
+// 작업이 끝나면(성공/실패 모두) content script용 상태도 지운다 — 남아 있으면 나중에 사용자가
+// 직접 /orders를 열었을 때 지난 작업의 주문으로 자동화가 다시 돌 수 있다.
 function resetJob() {
   job = null;
+  chrome.storage.local.remove([
+    "dhlTargetOrders",
+    "dhlPriceQueue",
+    "dhlPriceCurrent",
+    "dhlReadQueue",
+    "dhlReadCurrent",
+    "dhlReadResults",
+  ]);
 }
 
 async function notifySource(payload) {
@@ -27,7 +37,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message, sender) {
   switch (message?.type) {
     case "DHL_AUTOMATE_START":
-      return startJob(message.orderNumbers, sender.tab?.id, sender.tab?.windowId);
+      return startJob(message.orderNumbers, message.priceUpdates, sender.tab?.id, sender.tab?.windowId);
+
+    case "DHL_READ_PRICES_START":
+      return startReadJob(message.orderNumbers, sender.tab?.id, sender.tab?.windowId);
+
+    case "READ_PROGRESS":
+      if (job) job.readDone = (job.readDone ?? 0) + 1;
+      await notifySource({
+        type: "DHL_AUTOMATE_PROGRESS",
+        phase: "read",
+        orderNumber: message.orderNumber,
+        done: job?.readDone ?? 0,
+        total: job?.orderNumbers?.length ?? 0,
+      });
+      return { ok: true };
+
+    case "READ_DONE":
+      return onReadDone(message);
+
+    case "PRICES_PROGRESS":
+      if (job) job.pricesDone = (job.pricesDone ?? 0) + 1;
+      await notifySource({
+        type: "DHL_AUTOMATE_PROGRESS",
+        phase: "prices",
+        orderNumber: message.orderNumber,
+        done: job?.pricesDone ?? 0,
+        total: job?.pricesTotal ?? 0,
+      });
+      return { ok: true };
 
     case "ORDERS_PROGRESS":
       await notifySource({
@@ -68,7 +106,9 @@ async function handleMessage(message, sender) {
   }
 }
 
-async function startJob(orderNumbers, sourceTabId, sourceWindowId) {
+// priceUpdates: [{ orderNumber, items: [{ sku, title, unitPrice }] }] — 라벨 출력 전에
+// DHL 주문 상세 화면에서 Unit Price를 이 값으로 바꿀 주문들(없으면 가액 수정 없이 바로 라벨 출력)
+async function startJob(orderNumbers, priceUpdates, sourceTabId, sourceWindowId) {
   if (!Array.isArray(orderNumbers) || orderNumbers.length === 0) {
     return { ok: false, error: "orderNumbers가 비어있습니다." };
   }
@@ -76,8 +116,24 @@ async function startJob(orderNumbers, sourceTabId, sourceWindowId) {
     return { ok: false, error: "이미 진행 중인 자동화 작업이 있습니다." };
   }
 
-  job = { sourceTabId, sourceWindowId, dhlTabId: null, orderNumbers, phase: "orders" };
-  await chrome.storage.local.set({ dhlTargetOrders: orderNumbers });
+  const priceQueue = Array.isArray(priceUpdates)
+    ? priceUpdates.filter((p) => orderNumbers.includes(p.orderNumber) && p.items?.length > 0)
+    : [];
+
+  job = {
+    sourceTabId,
+    sourceWindowId,
+    dhlTabId: null,
+    orderNumbers,
+    phase: "orders",
+    pricesTotal: priceQueue.length,
+    pricesDone: 0,
+  };
+  await chrome.storage.local.set({
+    dhlTargetOrders: orderNumbers,
+    dhlPriceQueue: priceQueue,
+    dhlPriceCurrent: null,
+  });
 
   const tab = await chrome.tabs.create({ url: DHL_ORDERS_URL });
   job.dhlTabId = tab.id;
@@ -92,13 +148,61 @@ async function startJob(orderNumbers, sourceTabId, sourceWindowId) {
   return { ok: true };
 }
 
+// 가액 읽기 전용 작업: 주문마다 DHL 상세 화면의 Items 표를 읽기만 하고(수정 없음) 결과를 돌려준다.
+// int-shipping은 이 결과를 Shopify 단가와 비교해 불일치 품목을 보여주고, 사람이 고른 값으로
+// 다시 DHL_AUTOMATE(가액 수정 + 라벨 출력)를 시작한다.
+async function startReadJob(orderNumbers, sourceTabId, sourceWindowId) {
+  if (!Array.isArray(orderNumbers) || orderNumbers.length === 0) {
+    return { ok: false, error: "orderNumbers가 비어있습니다." };
+  }
+  if (job) {
+    return { ok: false, error: "이미 진행 중인 자동화 작업이 있습니다." };
+  }
+
+  job = { sourceTabId, sourceWindowId, dhlTabId: null, orderNumbers, phase: "read", readDone: 0 };
+  await chrome.storage.local.set({
+    dhlTargetOrders: [],
+    dhlPriceQueue: [],
+    dhlPriceCurrent: null,
+    dhlReadQueue: orderNumbers,
+    dhlReadCurrent: null,
+    dhlReadResults: {},
+  });
+
+  const tab = await chrome.tabs.create({ url: DHL_ORDERS_URL });
+  job.dhlTabId = tab.id;
+  await notifySource({
+    type: "DHL_AUTOMATE_PROGRESS",
+    phase: "read",
+    done: 0,
+    total: orderNumbers.length,
+  });
+  return { ok: true };
+}
+
+async function onReadDone(message) {
+  if (!job) return { ok: false, error: "no active job" };
+  await notifySource({ type: "DHL_AUTOMATE_READ_DONE", results: message.results ?? {} });
+  // 읽기용으로 연 DHL 탭은 닫고 비교 화면이 있는 int-shipping 탭으로 돌아간다
+  // (가액 수정 + 라벨 출력은 확인 후 새 탭에서 다시 시작됨)
+  const dhlTabId = job.dhlTabId;
+  await focusSourceTab();
+  resetJob();
+  try {
+    if (dhlTabId) await chrome.tabs.remove(dhlTabId);
+  } catch (err) {
+    console.warn("[DHL 자동화] 가액 읽기 탭 닫기 실패", err);
+  }
+  return { ok: true };
+}
+
 async function onOrdersDone(message) {
   if (!job) return { ok: false, error: "no active job" };
 
   if (!message.success) {
     await notifySource({
       type: "DHL_AUTOMATE_ERROR",
-      phase: "orders",
+      phase: job.phase,
       error: message.error ?? "주문 체크 중 오류가 발생했습니다.",
       notFound: message.notFound ?? [],
     });
