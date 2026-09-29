@@ -73,10 +73,18 @@ async function main() {
     await openNextReadOrder(dhlReadQueue);
     return;
   }
-  if (dhlPriceCurrent) {
-    // 처리 중이던 주문이 끝나기 전에 목록으로 돌아온 경우 — DHL은 SAVE(또는 UPDATE ORDER) 후 스스로 주문 목록으로
-    // 이동한다(실측 #28783). 상세 화면을 다시 열어 이어간다: 저장 뒤(verify)면 값 확인, 수정 중(edit)이면 남은 품목 수정.
-    // 무한 반복을 막기 위해 같은 주문을 다시 여는 횟수는 제한한다.
+  if (dhlPriceCurrent?.stage === "verify") {
+    // SAVE를 누른 뒤 목록으로 돌아옴 — DHL은 저장이 성공해야 목록으로 이동하므로 저장 완료로 본다
+    // (상세 화면을 다시 열어 확인하던 단계는 불필요해서 뺐다). 이어서 다음 주문 / 완료 / 라벨 단계로 진행.
+    await storageSet({ dhlPriceCurrent: null });
+    chrome.runtime.sendMessage({
+      type: "PRICES_PROGRESS",
+      orderNumber: dhlPriceCurrent.orderNumber,
+      remaining: dhlPriceQueue.length,
+    });
+  } else if (dhlPriceCurrent) {
+    // 수정 도중(SAVE 전)에 목록으로 돌아온 경우 — 상세 화면을 다시 열어 남은 품목을 마저 수정한다
+    // (이미 목표 값인 품목은 건너뜀). 무한 반복을 막기 위해 같은 주문을 다시 여는 횟수는 제한한다.
     const reopens = (dhlPriceCurrent.reopens ?? 0) + 1;
     if (reopens > MAX_REOPENS) {
       throw new Error(`${dhlPriceCurrent.orderNumber} 가액 수정이 끝나지 않은 채 계속 목록으로 돌아옵니다. DHL에서 직접 확인해주세요.`);
