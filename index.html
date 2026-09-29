@@ -1191,14 +1191,14 @@ function saveDeclaredPrices(entries) {
   }
 }
 
-// GMI 엑셀에 쓸 단가: DHL에 넣은 신고 단가가 있으면 그 값, 없으면 Shopify 단가.
+// GMI 엑셀에 쓸 단가: DHL에 넣은 신고 단가가 있으면 그 값, 없으면 Shopify 할인 적용 단가.
 // 라인 순서(idx)와 SKU가 둘 다 맞을 때만 쓴다(주문이 수정돼 품목이 바뀐 경우 대비).
 function gmiUnitPrice(order, li, idx, declared) {
   const saved = declared[order.orderNumber]?.items?.[idx];
   if (saved && (saved.sku || "") === (li.sku || "") && saved.unitPrice !== null && saved.unitPrice !== undefined) {
     return saved.unitPrice;
   }
-  return li.price || 0;
+  return defaultDeclaredUnitPrice(li) || 0;
 }
 
 // Shopify 라인과 DHL Items 행을 짝짓는다: SKU가 있으면 SKU, 없으면 품목명(앞부분 일치 — DHL은 이름이 잘려 보일 수 있음).
