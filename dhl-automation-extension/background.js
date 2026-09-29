@@ -18,6 +18,7 @@ function resetJob() {
     "dhlReadCurrent",
     "dhlReadResults",
     "dhlPriceOnly",
+    "dhlPrintLabels",
   ]);
 }
 
@@ -50,13 +51,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message, sender) {
   switch (message?.type) {
     case "DHL_AUTOMATE_START":
-      return startJob(
-        message.orderNumbers,
-        message.priceUpdates,
-        !!message.priceOnly,
-        sender.tab?.id,
-        sender.tab?.windowId
-      );
+      // 라벨 출력은 printLabels: true가 명시된 요청만 — 표시가 빠진 요청(옛 버전 파일 등)은 거절한다
+      if (message.printLabels !== true) {
+        return { ok: false, error: "라벨 출력 요청이 명시되지 않아 처리하지 않았습니다." };
+      }
+      return startJob(message.orderNumbers, message.priceUpdates, false, sender.tab?.id, sender.tab?.windowId);
+
+    case "DHL_PRICES_ONLY_START":
+      return startJob(message.orderNumbers, message.priceUpdates, true, sender.tab?.id, sender.tab?.windowId);
 
     case "PRICES_ONLY_DONE":
       return onPricesOnlyDone();
@@ -161,6 +163,7 @@ async function startJob(orderNumbers, priceUpdates, priceOnly, sourceTabId, sour
     dhlPriceQueue: priceQueue,
     dhlPriceCurrent: null,
     dhlPriceOnly: priceOnly,
+    dhlPrintLabels: !priceOnly, // content-orders.js는 이 값이 true일 때만 라벨을 출력한다
   });
 
   const tab = await chrome.tabs.create({ url: DHL_ORDERS_URL });
@@ -190,6 +193,7 @@ async function startReadJob(orderNumbers, sourceTabId, sourceWindowId) {
   job = { sourceTabId, sourceWindowId, dhlTabId: null, orderNumbers, phase: "read", readDone: 0 };
   await chrome.storage.local.set({
     dhlTargetOrders: [],
+    dhlPrintLabels: false,
     dhlPriceQueue: [],
     dhlPriceCurrent: null,
     dhlReadQueue: orderNumbers,
