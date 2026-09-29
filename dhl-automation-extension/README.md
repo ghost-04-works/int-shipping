@@ -154,3 +154,14 @@ DHL(DEC)에도 할인 금액이 들어가긴 하지만 Shopify와 정확히 일�
   Shopify 검색은 취소+환불+보관된 주문을 어떤 조건으로도 돌려주지 않아서(실측 #28783), 검색에 없으면 DHL 단가를 먼저 읽으면서
   주문 상세의 `Reference #`(= Shopify 주문 ID, `.ssit-order-desc-item`)를 가져와 `shopify-orders`의 `get`으로 직접 조회한다.
 - 작업이 끝나면(성공/실패) `dhlTargetOrders`/`dhlPrice*`/`dhlRead*` 저장값을 지운다.
+
+## 라벨 출력 안전장치 (2026-09-29, 확장 1.2)
+
+"가액만 확인·수정"에서 라벨이 출력된 사고가 있어(#28783, 확장 파일 일부만 교체된 상태로 추정) 라벨 출력은
+명시적으로 요청된 경우에만 하도록 바꿨다.
+
+- 요청 종류 분리: 가액만 수정은 `DHL_PRICES_ONLY`(→ `DHL_PRICES_ONLY_START`), 라벨 작업은 `DHL_AUTOMATE` + `printLabels: true`.
+  `content-bridge.js`와 `background.js` 둘 다 `printLabels: true`가 없는 라벨 요청은 거절한다.
+- `content-orders.js`는 저장값 `dhlPrintLabels === true`(라벨 작업으로 시작된 경우에만 설정)일 때만 라벨을 출력한다.
+- 버전 확인: `content-bridge.js`가 `DHL_EXT_HELLO { version }`(manifest 버전)을 알리고, int-shipping은 1.2 미만이거나
+  응답이 없으면 요청을 보내지 않는다. **확장 파일은 항상 폴더 전체를 교체할 것.**
