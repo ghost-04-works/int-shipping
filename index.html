@@ -416,8 +416,8 @@
   <div class="modal-box origin-modal-box" style="width:960px; max-width:95vw;">
     <h2>DHL 신고 가액 확인 — 라벨 출력 전</h2>
     <p style="font-size:12px; color:var(--text-dim); margin-top:-8px;">
-      DHL 주문에 들어가 있는 단가(USD)를 Shopify 할인 적용 단가와 비교했습니다. 불일치 품목은 Shopify에 맞출지,
-      DHL 값을 유지할지, 직접 입력할지 골라주세요. 최종 단가가 DHL과 다른 품목만 DHL에서 수정되고, 최종 단가는 GMI 수출신고 엑셀에도 그대로 들어갑니다.
+      DHL 주문에 들어가 있는 단가(USD)를 Shopify 할인 적용 단가와 비교했습니다. 품목마다 할인가·정가·DHL 유지·직접 입력 중 고를 수 있고
+      (불일치 품목은 기본 할인가), 최종 단가가 DHL과 다른 품목만 DHL에서 수정됩니다. 최종 단가는 GMI 수출신고 엑셀에도 그대로 들어갑니다.
     </p>
     <div id="declared-price-summary" style="font-size:12px; margin-bottom:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;"></div>
     <div style="max-height:55vh; overflow-y:auto;">
@@ -1357,19 +1357,24 @@ function openDeclaredPriceModal(targets, dhlResults) {
           ? `<span class="price-original">${fmtPrice(original)}</span> ${fmtPrice(shopify)}`
           : fmtPrice(shopify);
 
+      declaredPriceLines[lineNo].original = original;
+      declaredPriceLines[lineNo].hasDiscount = hasDiscount;
+
+      // DHL에 있는 품목은 일치 여부와 상관없이 처리 방법을 고를 수 있다(할인가/정가/DHL 유지/직접 입력).
+      // 기본값: 불일치면 할인가(할인가 정보가 없으면 DHL 유지 — 정가로 덮어쓰지 않도록), 일치면 DHL 유지.
       let actionCell;
       let finalValue;
-      if (status === "mismatch") {
-        const defaultAction = hasDiscount ? "shopify" : "dhl";
+      if (dhlRow) {
+        const defaultAction = status === "mismatch" && hasDiscount ? "discount" : "dhl";
+        const opt = (value, label, disabled = false) =>
+          `<option value="${value}"${defaultAction === value ? " selected" : ""}${disabled ? " disabled" : ""}>${label}</option>`;
         actionCell = `<select class="price-action" data-line="${lineNo}">
-            <option value="shopify"${defaultAction === "shopify" ? " selected" : ""}>Shopify에 맞춤</option>
-            <option value="dhl"${defaultAction === "dhl" ? " selected" : ""}>DHL 값 유지</option>
-            <option value="manual">직접 입력</option>
+            ${opt("discount", "할인가", !hasDiscount)}
+            ${opt("original", "정가", original === null)}
+            ${opt("dhl", status === "match" ? "DHL 유지 (일치)" : "DHL 유지")}
+            ${opt("manual", "직접 입력")}
           </select>`;
-        finalValue = defaultAction === "shopify" ? shopify : dhlRow.unitPrice;
-      } else if (status === "match") {
-        actionCell = "일치";
-        finalValue = dhlRow.unitPrice;
+        finalValue = defaultAction === "discount" ? shopify : dhlRow.unitPrice;
       } else {
         actionCell = `<span style="color:var(--danger);">DHL에 없음</span>`;
         finalValue = shopify;
@@ -1386,7 +1391,7 @@ function openDeclaredPriceModal(targets, dhlResults) {
           <td>${actionCell}</td>
           <td><input type="number" step="0.01" min="0" class="price-input" data-line="${lineNo}"
                 value="${finalValue === null || finalValue === undefined ? "" : Number(finalValue).toFixed(2)}"
-                ${status === "mismatch" ? "readonly" : "readonly disabled"} /></td>
+                ${dhlRow ? "readonly" : "readonly disabled"} /></td>
         </tr>
       `);
     });
@@ -1406,6 +1411,10 @@ function openDeclaredPriceModal(targets, dhlResults) {
   tbody.querySelectorAll(".price-action").forEach((sel) => {
     sel.addEventListener("change", () => applyPriceAction(sel));
   });
+  tbody.querySelectorAll(".price-input").forEach((input) => {
+    input.addEventListener("input", updateDeclaredConfirmLabel);
+  });
+  const anySelectable = tbody.querySelector(".price-action") !== null;
 
   const summary = document.getElementById("declared-price-summary");
   summary.innerHTML = `
@@ -1419,22 +1428,31 @@ function openDeclaredPriceModal(targets, dhlResults) {
             : "모든 품목이 Shopify와 일치합니다"}
     </span>
     ${notFoundOrders.length ? `<span style="color:var(--danger);">DHL에서 못 찾은 주문: ${escapeHtml(notFoundOrders.join(", "))}</span>` : ""}
-    ${mismatchCount ? `<label style="font-size:12px;"><input type="checkbox" id="declared-only-mismatch" checked /> 불일치만 보기</label>
-      <button type="button" id="declared-all-shopify">불일치 전부 Shopify에 맞춤</button>
-      <button type="button" id="declared-all-dhl">불일치 전부 DHL 유지</button>` : ""}
-    ${hasDiscountField ? "" : `<span style="color:var(--danger); font-weight:600;">⚠ Shopify 할인 적용 단가를 받지 못해 정가로 비교 중입니다 — "Shopify에 맞춤"을 고르면 DHL이 정가로 바뀝니다. shopify-orders 함수를 최신 버전으로 배포해주세요.</span>`}
+    ${mismatchCount ? `<label style="font-size:12px;"><input type="checkbox" id="declared-only-mismatch" checked /> 불일치만 보기</label>` : ""}
+    ${anySelectable ? `<button type="button" id="declared-all-discount"${hasDiscountField ? "" : " disabled"}>전체 할인가로</button>
+      <button type="button" id="declared-all-original">전체 정가로</button>
+      <button type="button" id="declared-all-dhl">전체 DHL 유지</button>` : ""}
+    ${hasDiscountField ? "" : `<span style="color:var(--danger); font-weight:600;">⚠ Shopify 할인 적용 단가를 받지 못해 정가로 비교 중입니다 — "정가"를 고르면 DHL이 정가로 바뀝니다. shopify-orders 함수를 최신 버전으로 배포해주세요.</span>`}
   `;
   if (mismatchCount) {
     document.getElementById("declared-only-mismatch").addEventListener("change", (e) => {
       tbody.classList.toggle("only-mismatch", e.target.checked);
     });
-    document.getElementById("declared-all-shopify").addEventListener("click", () => setAllPriceActions("shopify"));
-    document.getElementById("declared-all-dhl").addEventListener("click", () => setAllPriceActions("dhl"));
+  }
+  if (anySelectable) {
+    // 일괄 변경은 숨겨진(일치) 행에도 적용되므로 "불일치만 보기"를 풀어 전부 보이게 한다
+    const setAll = (value) => {
+      const onlyMismatch = document.getElementById("declared-only-mismatch");
+      if (onlyMismatch) onlyMismatch.checked = false;
+      tbody.classList.remove("only-mismatch");
+      setAllPriceActions(value);
+    };
+    document.getElementById("declared-all-discount").addEventListener("click", () => setAll("discount"));
+    document.getElementById("declared-all-original").addEventListener("click", () => setAll("original"));
+    document.getElementById("declared-all-dhl").addEventListener("click", () => setAll("dhl"));
   }
 
-  document.getElementById("declared-price-confirm").textContent = declaredPriceOnly
-    ? mismatchCount ? "가액만 수정 (라벨 출력 안 함)" : "닫기"
-    : mismatchCount ? "확인 후 가액 수정 + 라벨 출력" : "라벨 출력";
+  updateDeclaredConfirmLabel();
   document.getElementById("declared-price-modal-error").textContent = "";
   document.getElementById("declared-price-modal").classList.add("visible");
 }
@@ -1442,17 +1460,37 @@ function openDeclaredPriceModal(targets, dhlResults) {
 function applyPriceAction(sel) {
   const line = declaredPriceLines[Number(sel.dataset.line)];
   const input = document.querySelector(`#declared-price-table-body .price-input[data-line="${sel.dataset.line}"]`);
-  if (sel.value === "shopify") input.value = fmtPrice(line.shopify) === "-" ? "" : Number(line.shopify).toFixed(2);
-  else if (sel.value === "dhl") input.value = Number(line.dhlRow.unitPrice).toFixed(2);
+  const toInput = (v) => (v === null || v === undefined || v === "" ? "" : Number(v).toFixed(2));
+  if (sel.value === "discount") input.value = toInput(line.shopify);
+  else if (sel.value === "original") input.value = toInput(line.original);
+  else if (sel.value === "dhl") input.value = toInput(line.dhlRow.unitPrice);
   input.readOnly = sel.value !== "manual";
   if (sel.value === "manual") input.focus();
+  updateDeclaredConfirmLabel();
 }
 
+// 고를 수 없는 값(할인가 정보 없음, 정가 없음)은 건너뛴다
 function setAllPriceActions(value) {
   document.querySelectorAll("#declared-price-table-body .price-action").forEach((sel) => {
+    const option = sel.querySelector(`option[value="${value}"]`);
+    if (!option || option.disabled) return;
     sel.value = value;
     applyPriceAction(sel);
   });
+}
+
+// 확인 버튼에 DHL에서 실제로 바뀔 품목 수를 보여준다(최종 단가가 DHL 값과 다른 품목)
+function updateDeclaredConfirmLabel() {
+  let changes = 0;
+  declaredPriceLines.forEach((line, lineNo) => {
+    if (!line.dhlRow) return;
+    const input = document.querySelector(`#declared-price-table-body .price-input[data-line="${lineNo}"]`);
+    const raw = input?.value.trim();
+    if (raw && !samePrice(parseFloat(raw), line.dhlRow.unitPrice)) changes++;
+  });
+  document.getElementById("declared-price-confirm").textContent = declaredPriceOnly
+    ? changes ? `DHL 가액 ${changes}개 수정 (라벨 출력 안 함)` : "닫기"
+    : changes ? `DHL 가액 ${changes}개 수정 + 라벨 출력` : "라벨 출력";
 }
 
 document.getElementById("declared-price-cancel").addEventListener("click", () => {
@@ -1471,7 +1509,7 @@ document.getElementById("declared-price-confirm").addEventListener("click", () =
     const input = document.querySelector(`#declared-price-table-body .price-input[data-line="${lineNo}"]`);
     const raw = input ? input.value.trim() : line.shopify === null ? "" : String(line.shopify);
     const unitPrice = raw === "" ? null : Math.round(parseFloat(raw) * 100) / 100;
-    const bad = line.status === "mismatch" && (raw === "" || !Number.isFinite(unitPrice) || unitPrice < 0);
+    const bad = !!line.dhlRow && (raw === "" || !Number.isFinite(unitPrice) || unitPrice < 0);
     if (input) input.style.borderColor = bad ? "var(--danger)" : "";
     if (bad) invalid = true;
 
