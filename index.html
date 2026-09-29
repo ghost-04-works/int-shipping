@@ -525,6 +525,7 @@ let processedShipmentMap = {}; // orderId -> { orderNumber, warehouseId, process
 let currentTab = "dhl";
 let dhlReportMap = {}; // orderNumber -> { tracking, shipto, weight, freight, ct, country }
 let dhlReportOrderSequence = []; // 리포트 파일에 등장한 순서 그대로의 주문번호 목록
+let dhlReportLoading = false; // 리포트 파싱 + 목록에 없는 주문 조회가 끝날 때까지 true
 let selectedDhlOrderIds = new Set();
 
 // ── 인증 ──────────────────────────────────────────────────────────
@@ -633,6 +634,19 @@ function getProcessedDisplayList() {
 // append:true면 다음 페이지를 이어서 가져와 뒤에 붙인다("더 보기" 버튼용).
 // 처리완료 주문은 계속 쌓이기만 해서 서버가 한 번에 최대 250건씩 끊어 주므로,
 // 그 이상 보려면 이 함수를 커서를 이어받아 다시 호출해야 한다.
+// 같은 주문(id)이 두 번 들어가지 않게 합친다 — 먼저 있던 순서를 유지하고 새 주문만 뒤에 붙인다
+function mergeOrdersById(existing, incoming) {
+  const seen = new Set(existing.map((o) => o.id));
+  const merged = [...existing];
+  for (const o of incoming) {
+    if (!seen.has(o.id)) {
+      seen.add(o.id);
+      merged.push(o);
+    }
+  }
+  return merged;
+}
+
 async function loadProcessedOrders({ append = false } = {}) {
   if (!append) {
     document.getElementById("table-container").innerHTML = '<div class="loading">처리완료 주문을 불러오는 중...</div>';
@@ -643,7 +657,7 @@ async function loadProcessedOrders({ append = false } = {}) {
       status: "fulfilled",
       cursor: append ? processedCursor : null,
     });
-    processedOrders = append ? [...processedOrders, ...result.orders] : result.orders;
+    processedOrders = append ? mergeOrdersById(processedOrders, result.orders) : result.orders;
     processedCursor = result.nextCursor;
     processedHasMore = result.hasMore;
     processedLoaded = true;
@@ -707,8 +721,8 @@ function render() {
   // 리포트 없이 누르면 송장번호 빈 포장대장과 내용 0건 수출신고 파일이 나와서 아예 못 누르게 막는다.
   const exportBtn = document.getElementById("dhl-export-btn");
   const hasReport = Object.keys(dhlReportMap).length > 0;
-  exportBtn.disabled = !hasReport;
-  exportBtn.title = hasReport ? "" : "DHL 리포트를 먼저 업로드해주세요";
+  exportBtn.disabled = !hasReport || dhlReportLoading;
+  exportBtn.title = !hasReport ? "DHL 리포트를 먼저 업로드해주세요" : dhlReportLoading ? "리포트 주문을 불러오는 중입니다" : "";
 
   if (currentTab === "processed") {
     const container = document.getElementById("table-container");
@@ -752,7 +766,10 @@ function render() {
     bindSelectAllCheckbox(displayList);
     bindManualDeductButtons(displayList);
     if (!isSearching && processedHasMore) {
-      document.getElementById("processed-load-more-btn").addEventListener("click", () => {
+      document.getElementById("processed-load-more-btn").addEventListener("click", (e) => {
+        // 응답 전에 또 누르면 같은 페이지가 두 번 붙어 주문이 중복됐다(실측: #27647 등 5건이 수출신고에 2번) — 로딩 중엔 막는다
+        e.target.disabled = true;
+        e.target.textContent = "불러오는 중...";
         loadProcessedOrders({ append: true });
       });
     }
@@ -1755,7 +1772,7 @@ function waitForReportParsed({ timeout = 8000 } = {}) {
     const start = Date.now();
     (function check() {
       const text = document.getElementById("dhl-report-status").textContent;
-      if (text.includes("매칭 데이터 로드됨")) {
+      if (text.includes("매칭 데이터 로드됨") && !dhlReportLoading) {
         resolve(true);
       } else if (Date.now() - start > timeout) {
         resolve(false);
@@ -1783,6 +1800,7 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
 
+    dhlReportLoading = true;
     dhlReportMap = {};
     dhlReportOrderSequence = [];
     // rows[0]은 헤더. 1행부터 데이터.
@@ -1816,13 +1834,59 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
     }
     statusEl.textContent += ` — ${autoSelectedCount}건 자동 선택됨`;
 
+    // 처리완료 탭: 리포트에 있는데 불러온 목록에 없는 주문(오래돼서 최근 250건 밖 등)은 주문번호로 직접 조회해
+    // 목록에 추가하고 체크한다 — 안 그러면 조용히 빠진 채 포장대장/수출신고 파일이 만들어진다(실측: #27402 등 4건 누락).
+    if (currentTab === "processed") {
+      const loadedNumbers = new Set(candidateList.map((o) => o.orderNumber));
+      const missing = [...reportOrderNumbers].filter((no) => !loadedNumbers.has(no));
+      if (missing.length > 0) {
+        render();
+        statusEl.textContent += ` — 목록에 없는 ${missing.length}건 조회 중...`;
+        const { found, notFound } = await fetchOrdersByNumber(missing);
+        processedOrders = mergeOrdersById(processedOrders, found);
+        if (processedSearchResults) processedSearchResults = mergeOrdersById(processedSearchResults, found);
+        for (const o of found) selectedDhlOrderIds.add(o.id);
+        if (found.length > 0) await loadProcessedShipmentStatus(found);
+        statusEl.textContent =
+          `${Object.keys(dhlReportMap).length}건 매칭 데이터 로드됨 — ${autoSelectedCount + found.length}건 자동 선택됨` +
+          (found.length ? ` (목록에 없던 ${found.length}건 추가로 불러옴)` : "") +
+          (notFound.length ? ` — ⚠ Shopify에서 못 찾은 주문 ${notFound.length}건: ${notFound.join(", ")}` : "");
+        statusEl.style.color = notFound.length ? "var(--danger)" : "";
+      }
+    }
+
+    dhlReportLoading = false;
     render(); // 매칭 상태 + 체크박스 갱신
   } catch (err) {
+    dhlReportLoading = false;
     statusEl.textContent = "파싱 실패: " + err.message;
     dhlReportMap = {};
     render(); // 리포트가 없으니 포장대장/수출신고 파일 생성 버튼을 다시 막는다
   }
 });
+
+// 주문번호 목록을 하나씩 검색해 정확히 같은 번호의 주문을 가져온다(동시에 4건씩).
+// 발송 상태와 무관하게 찾도록 status "any" — 부분 발송·환불·보관된 주문도 포함.
+async function fetchOrdersByNumber(orderNumbers) {
+  const found = [];
+  const notFound = [];
+  const queue = [...orderNumbers];
+  async function worker() {
+    while (queue.length > 0) {
+      const no = queue.shift();
+      try {
+        const results = await callFunction("shopify-orders", { action: "search", query: no, status: "any" });
+        const order = (results || []).find((o) => o.orderNumber === no);
+        if (order) found.push(order);
+        else notFound.push(no);
+      } catch {
+        notFound.push(no);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
+  return { found, notFound };
+}
 
 // ── 선택 주문 일괄 발송처리 + 재고차감 ─────────────────────────────
 // 실제 재고가 바뀌는 동작이라, 바로 실행하지 않고 어떤 주문의 어떤 품목이 몇 개
@@ -2350,7 +2414,7 @@ document.getElementById("dhl-export-btn").addEventListener("click", async () => 
     return;
   }
   const sourceList = currentTab === "processed" ? getProcessedDisplayList() : allOrders.filter((o) => classify(o) === "dhl");
-  let targets = sourceList.filter((o) => selectedDhlOrderIds.has(o.id));
+  let targets = mergeOrdersById([], sourceList.filter((o) => selectedDhlOrderIds.has(o.id))); // 같은 주문은 한 번만
   if (targets.length === 0) {
     alert("엑셀로 생성할 주문을 먼저 체크박스로 선택해주세요.");
     return;
@@ -2660,7 +2724,7 @@ function exportGmi(orders, originMap) {
   XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
   const today = new Date();
   const mmdd = `${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
-  XLSX.writeFile(wb, `GMI_DEC 수출신고요청_${orders.length}건_${mmdd}.xlsx`);
+  XLSX.writeFile(wb, `GMI_DEC 수출신고요청_${blockCount}건_${mmdd}.xlsx`); // 실제로 들어간 주문 수
 }
 
 function escapeHtml(str) {
