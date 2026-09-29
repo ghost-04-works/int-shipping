@@ -93,7 +93,7 @@ async function main() {
   const remaining = new Set(targetOrderNumbers);
   const total = targetOrderNumbers.length;
 
-  await waitForTableReady();
+  await waitForRowsStable();
 
   for (let page = 0; page < MAX_PAGES; page++) {
     processCurrentPage(remaining);
@@ -207,7 +207,7 @@ async function openNextPriceOrder(queue) {
   const [current, ...rest] = queue;
   const link = await findOrderLinkAcrossPages(current.orderNumber);
   if (!link) {
-    throw new Error(`가액 수정 대상 ${current.orderNumber}을(를) DHL 주문 목록에서 찾지 못했습니다.`);
+    throw new Error(`가액 수정 대상 ${current.orderNumber}을(를) DHL 주문 목록에서 찾지 못했습니다. (${describeLastScan()})`);
   }
 
   await storageSet({
@@ -223,7 +223,7 @@ async function openNextReadOrder(queue) {
   const [orderNumber, ...rest] = queue;
   const link = await findOrderLinkAcrossPages(orderNumber);
   if (!link) {
-    await recordReadResult(orderNumber, { notFound: true }, rest);
+    await recordReadResult(orderNumber, { notFound: true, scan: describeLastScan() }, rest);
     if (rest.length > 0) {
       location.assign(DHL_ORDERS_URL);
     } else {
@@ -235,14 +235,30 @@ async function openNextReadOrder(queue) {
   await openOrderDetail(link, orderNumber);
 }
 
+// 못 찾았을 때 원인을 볼 수 있게 마지막 탐색 기록을 남긴다(몇 페이지, 몇 건, 처음/마지막 주문번호).
+let lastScan = null;
+
 async function findOrderLinkAcrossPages(orderNumber) {
-  await waitForTableReady();
+  await waitForRowsStable();
+  const scan = { pages: 0, rows: 0, first: null, last: null };
+  lastScan = scan;
   for (let page = 0; page < MAX_PAGES; page++) {
+    const seen = orderNumbersOnPage();
+    scan.pages++;
+    scan.rows += seen.length;
+    scan.first ??= seen[0] ?? null;
+    scan.last = seen[seen.length - 1] ?? scan.last;
     const link = findOrderLink(orderNumber);
     if (link) return link;
     if (!(await goToNextPageIfNeeded())) break;
   }
   return null;
+}
+
+function describeLastScan() {
+  if (!lastScan) return "";
+  const range = lastScan.first ? ` (${lastScan.first} ~ ${lastScan.last})` : "";
+  return `목록 ${lastScan.pages}페이지, 주문 ${lastScan.rows}건 확인${range}`;
 }
 
 async function openOrderDetail(link, orderNumber) {
@@ -520,14 +536,54 @@ function processCurrentPage(remaining) {
   }
 }
 
+// 다음 페이지로 넘긴다. 클릭 후 표의 주문번호 목록이 실제로 바뀔 때까지 기다려야 한다 —
+// 안 그러면 아직 이전 페이지가 떠 있는 상태를 다시 검사하고 넘어가 버려 주문을 놓친다
+// (실측: New 탭 286건 중 #28784를 못 찾음).
 async function goToNextPageIfNeeded() {
   const nextBtn = document.querySelector(SELECTORS.nextPageButton);
-  if (!nextBtn || nextBtn.disabled || nextBtn.getAttribute("aria-disabled") === "true") {
+  if (
+    !nextBtn ||
+    nextBtn.disabled ||
+    nextBtn.getAttribute("aria-disabled") === "true" ||
+    nextBtn.classList.contains("k-disabled")
+  ) {
     return false;
   }
+  const before = orderNumbersOnPage().join(",");
   nextBtn.click();
-  await waitForTableReady();
+  const start = Date.now();
+  while (Date.now() - start < 15000) {
+    await sleep(300);
+    const now = orderNumbersOnPage().join(",");
+    if (now && now !== before) break;
+  }
+  if (orderNumbersOnPage().join(",") === before) return false; // 페이지가 안 바뀜 — 마지막 페이지로 간주
+  await waitForRowsStable();
   return true;
+}
+
+function orderNumbersOnPage() {
+  return Array.from(document.querySelectorAll(SELECTORS.tableRow))
+    .map((row) => row.querySelector(SELECTORS.rowOrderNumber)?.textContent?.trim())
+    .filter(Boolean);
+}
+
+// 표가 다 그려질 때까지(주문번호 목록이 0.8초 동안 그대로일 때까지) 기다린다.
+async function waitForRowsStable({ timeout = 15000 } = {}) {
+  await waitForTableReady();
+  const start = Date.now();
+  let last = orderNumbersOnPage().join(",");
+  let stableSince = Date.now();
+  while (Date.now() - start < timeout) {
+    await sleep(200);
+    const now = orderNumbersOnPage().join(",");
+    if (now !== last) {
+      last = now;
+      stableSince = Date.now();
+    } else if (now && Date.now() - stableSince >= 800) {
+      return;
+    }
+  }
 }
 
 async function waitForTableReady({ timeout = 10000 } = {}) {
