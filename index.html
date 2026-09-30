@@ -396,6 +396,7 @@
     <p style="font-size:12px; color:var(--text-dim); margin-top:-8px;">
       빨간 테두리는 셀메이트에 원산지 코드가 없는 품목입니다. 직접 입력해주세요.
     </p>
+    <div id="origin-value-warning" style="display:none; margin-bottom:10px; padding:8px 10px; border:1px solid var(--danger); border-radius:6px; font-size:12px;"></div>
     <div style="max-height:50vh; overflow-y:auto;">
       <table class="origin-table">
         <thead>
@@ -1225,10 +1226,8 @@ document.getElementById("dhl-label-print-btn").addEventListener("click", () => {
 
 // ── DHL 신고 가액 확인 ─────────────────────────────────────────────
 // Shopify 할인은 DHL에 반영되지 않아(DHL은 등록된 제품 가액을 씀) 라벨 출력 전에 DHL 주문의
-// Unit Price를 할인 적용 단가로 바꿔야 한다. 여기서 확정한 단가를 확장 프로그램에 넘겨 DHL에서
-// 고치게 하고, 같은 값을 localStorage에 남겨 GMI 수출신고 엑셀에서도 쓴다(두 서류 금액 일치).
-const DECLARED_PRICES_KEY = "dhlDeclaredPrices";
-const DECLARED_PRICES_TTL_MS = 60 * 24 * 60 * 60 * 1000; // 60일 지난 기록은 정리
+// Unit Price를 할인 적용 단가로 바꿔야 한다. 여기서 확정한 단가를 확장 프로그램에 넘겨 DHL에서 고친다.
+// GMI 수출신고 단가는 여기서 고른 값과 무관하게 항상 Shopify 실제 결제 단가를 쓴다(아래 gmiUnitPrice).
 let declaredPriceTargets = [];
 let declaredPriceOnly = false; // true: "가액만 확인·수정"(라벨 출력 안 함), false: 라벨 자동 출력 흐름
 // Shopify 검색에 안 잡히는 주문(취소+환불+보관 등)을 DHL "Reference #"(= Shopify 주문 ID)로 찾는 중이면 그 주문번호
@@ -1241,39 +1240,17 @@ function defaultDeclaredUnitPrice(li) {
   return v === undefined || v === null || v === "" ? null : Number(v);
 }
 
-function loadDeclaredPrices() {
-  try {
-    const all = JSON.parse(localStorage.getItem(DECLARED_PRICES_KEY) || "{}");
-    const now = Date.now();
-    for (const k of Object.keys(all)) {
-      if (!all[k]?.savedAt || now - all[k].savedAt > DECLARED_PRICES_TTL_MS) delete all[k];
-    }
-    return all;
-  } catch {
-    return {};
-  }
-}
-
-function saveDeclaredPrices(entries) {
-  try {
-    const all = loadDeclaredPrices();
-    for (const [orderNumber, items] of Object.entries(entries)) {
-      all[orderNumber] = { savedAt: Date.now(), items };
-    }
-    localStorage.setItem(DECLARED_PRICES_KEY, JSON.stringify(all));
-  } catch (err) {
-    console.warn("신고 가액 저장 실패", err);
-  }
-}
-
-// GMI 엑셀에 쓸 단가: DHL에 넣은 신고 단가가 있으면 그 값, 없으면 Shopify 할인 적용 단가.
-// 라인 순서(idx)와 SKU가 둘 다 맞을 때만 쓴다(주문이 수정돼 품목이 바뀐 경우 대비).
-function gmiUnitPrice(order, li, idx, declared) {
-  const saved = declared[order.orderNumber]?.items?.[idx];
-  if (saved && (saved.sku || "") === (li.sku || "") && saved.unitPrice !== null && saved.unitPrice !== undefined) {
-    return saved.unitPrice;
-  }
+// GMI 엑셀에 쓸 단가: Shopify 실제 결제 단가(할인 적용). 수출신고는 실제 거래(Shopify) 기준으로 검증하므로
+// DHL에 어떤 값을 넣었든, 어느 PC에서 파일을 만들든 같은 값이 들어가야 한다.
+function gmiUnitPrice(li) {
   return defaultDeclaredUnitPrice(li) || 0;
+}
+
+// 주문의 Shopify 실제 결제 합계(GMI 금액 합계와 같은 계산)
+function shopifyOrderTotal(order) {
+  let total = 0;
+  for (const li of order.lineItems) total += Math.round(gmiUnitPrice(li) * li.quantity * 100) / 100;
+  return Math.round(total * 100) / 100;
 }
 
 // 주문번호로 Shopify 주문을 직접 불러와(취소·발송완료 주문 포함) DHL 가액만 확인·수정한다.
@@ -1586,12 +1563,11 @@ document.getElementById("declared-price-cancel").addEventListener("click", () =>
 
 document.getElementById("declared-price-confirm").addEventListener("click", () => {
   const errorEl = document.getElementById("declared-price-modal-error");
-  const entries = {}; // orderNumber -> [{ sku, title, unitPrice }] (Shopify 라인 순서 그대로, GMI용)
   const updatesByOrder = {}; // orderNumber -> [{ sku, title, rowIndex, unitPrice }] (DHL에서 고칠 것만)
   let invalid = false;
 
   declaredPriceLines.forEach((line, lineNo) => {
-    // DHL에서 못 찾은 주문은 입력칸이 없다 — Shopify 단가를 GMI용으로만 남긴다
+    // DHL에서 못 찾은 주문은 입력칸이 없다 — DHL에서 고칠 것도 없다
     const input = document.querySelector(`#declared-price-table-body .price-input[data-line="${lineNo}"]`);
     const raw = input ? input.value.trim() : line.shopify === null ? "" : String(line.shopify);
     const unitPrice = raw === "" ? null : Math.round(parseFloat(raw) * 100) / 100;
@@ -1599,8 +1575,7 @@ document.getElementById("declared-price-confirm").addEventListener("click", () =
     if (input) input.style.borderColor = bad ? "var(--danger)" : "";
     if (bad) invalid = true;
 
-    const { order, idx, li, dhlRow, rowIndex } = line;
-    (entries[order.orderNumber] ||= [])[idx] = { sku: li.sku || "", title: li.title, unitPrice };
+    const { order, li, dhlRow, rowIndex } = line;
 
     if (dhlRow && unitPrice !== null && !samePrice(unitPrice, dhlRow.unitPrice)) {
       (updatesByOrder[order.orderNumber] ||= []).push({
@@ -1617,7 +1592,6 @@ document.getElementById("declared-price-confirm").addEventListener("click", () =
     return;
   }
 
-  saveDeclaredPrices(entries);
   document.getElementById("declared-price-modal").classList.remove("visible");
 
   const priceUpdates = Object.entries(updatesByOrder).map(([orderNumber, items]) => ({ orderNumber, items }));
@@ -1852,7 +1826,7 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
     dhlReportOrderSequence = [];
     // rows[0]은 헤더. 1행부터 데이터.
     // 컬럼 인덱스는 기존 PackageSentReport 포맷 기준:
-    // 0 ShipTo, 1 OurRef, 5 Weight, 16 TrackingNumber, 35 Freight Charge, 40 Number of packages sent
+    // 0 ShipTo, 1 OurRef, 5 Weight, 16 TrackingNumber, 35 Freight Charge, 38 Order Value(DHL 신고 총액), 40 Number of packages sent
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const ref = (row[1] || "").toString().trim();
@@ -1863,6 +1837,7 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
         weight: (row[5] || "").toString().trim(),
         freight: (row[35] || "").toString().trim(),
         ct: (row[40] || "1").toString().trim(),
+        orderValue: parseFloat((row[38] || "").toString().replace(/[^0-9.]/g, "")),
       };
       dhlReportOrderSequence.push(ref);
     }
@@ -2567,6 +2542,28 @@ function openOriginModal(targets, lookup) {
     });
   }
   tbody.innerHTML = rowsHtml.join("");
+
+  // 수출신고 금액(Shopify 실제 결제 합계)과 DHL 리포트의 신고 총액(Order Value)이 다른 주문 안내.
+  // 수출신고는 Shopify 기준이라 파일은 그대로 만들되, DHL 가액을 안 고친 주문을 알 수 있게 보여준다.
+  const mismatches = [];
+  for (const order of targets) {
+    const dhlValue = dhlReportMap[order.orderNumber]?.orderValue;
+    if (!Number.isFinite(dhlValue)) continue;
+    const shopifyTotal = shopifyOrderTotal(order);
+    if (Math.abs(shopifyTotal - dhlValue) > 0.005) {
+      mismatches.push(
+        `${escapeHtml(order.orderNumber)}: DHL $${dhlValue.toFixed(2)} / Shopify(수출신고) $${shopifyTotal.toFixed(2)}`
+      );
+    }
+  }
+  const warnEl = document.getElementById("origin-value-warning");
+  warnEl.style.display = mismatches.length ? "" : "none";
+  warnEl.innerHTML = mismatches.length
+    ? `<b style="color:var(--danger);">⚠ DHL 신고 금액이 Shopify 결제 금액과 다른 주문 ${mismatches.length}건</b>` +
+      ` — 수출신고 파일은 Shopify 금액으로 만들어집니다.<br>` +
+      mismatches.join("<br>")
+    : "";
+
   document.getElementById("origin-modal-error").textContent = "";
   document.getElementById("origin-modal").classList.add("visible");
 }
@@ -2677,7 +2674,6 @@ function exportChulgobon(orders) {
 }
 
 function exportGmi(orders, originMap) {
-  const declared = loadDeclaredPrices();
   const header = [
     "AWB NO", "구매자", "목적국", "CT\n(WB)", "총중량\n(WB)", "수량", "단가", "금액", "총신고금액\n(WB)",
     "신고품명", "HS CODE\n(품목별)", "모델명\n(규격)", "인도조건", "화폐단위", "환급유무", "원산지",
@@ -2706,7 +2702,7 @@ function exportGmi(orders, originMap) {
     let firstRow = true;
 
     itemLines.forEach((li, idx) => {
-      const unitPrice = gmiUnitPrice(order, li, idx, declared);
+      const unitPrice = gmiUnitPrice(li);
       const amount = Math.round(unitPrice * li.quantity * 100) / 100;
       blockTotal += amount;
       rows.push([
