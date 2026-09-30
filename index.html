@@ -1751,7 +1751,6 @@ async function handleDhlAutomateDone(msg, statusEl, btn) {
   try {
     // 이 리포트로는 방금 라벨을 출력한 주문만 체크한다 (오늘 앞서 출력한 주문이 섞이지 않게)
     reportBatchFilter = labelBatchOrderNumbers;
-    selectedDhlOrderIds.clear();
     injectReportFile(msg.report);
   } catch (err) {
     statusEl.style.color = "var(--danger)";
@@ -1849,10 +1848,11 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
     // 자동 체크 대상 정하기. DHL "오늘 날짜" 리포트에는 오늘 출력한 라벨이 전부 들어 있어서, 전부 체크하면
     // 이미 처리한 오전 출력분이 포장대장·수출신고 파일에 섞인다(실측).
     // - 라벨 자동 출력에서 넘어온 리포트: 방금 라벨을 출력한 주문(이번 출력분)만 체크
-    // - 직접 올린 리포트: 포장대장/수출신고 파일을 이미 만든 적 있는 주문은 빼고 체크 (필요하면 사람이 직접 체크)
+    // - 직접 올린 리포트: 사람이 고른 리포트이므로 그 리포트의 주문 전부를 체크 (파일을 이미 만든 주문도 포함)
+    // 어느 쪽이든 리포트를 올리기 전에 체크돼 있던 주문은 지운다 — 리포트에 없는 주문이 파일에 섞이지 않게.
     const batch = reportBatchFilter;
     reportBatchFilter = null;
-    const exportHistory = loadExportHistory();
+    selectedDhlOrderIds.clear();
     let selectNumbers;
     let excludedNote = "";
     if (batch) {
@@ -1860,9 +1860,10 @@ document.getElementById("dhl-report-input").addEventListener("change", async (e)
       const excluded = reportNumbers.length - selectNumbers.length;
       excludedNote = ` — 이번 출력분 ${selectNumbers.length}건만 선택` + (excluded ? ` (그 전에 출력한 ${excluded}건 제외)` : "");
     } else {
+      selectNumbers = reportNumbers;
+      const exportHistory = loadExportHistory();
       const already = reportNumbers.filter((no) => exportHistory[no]);
-      selectNumbers = reportNumbers.filter((no) => !exportHistory[no]);
-      if (already.length) excludedNote = ` — 파일을 이미 만든 ${already.length}건은 체크 안 함 (필요하면 직접 체크)`;
+      if (already.length) excludedNote = ` — 이 중 ${already.length}건은 전에 파일을 만든 적 있음 (📄 표시)`;
     }
     const selectSet = new Set(selectNumbers);
 
@@ -2500,6 +2501,14 @@ document.getElementById("dhl-export-btn").addEventListener("click", async () => 
   if (targets.length === 0) {
     alert("엑셀로 생성할 주문을 먼저 체크박스로 선택해주세요.");
     return;
+  }
+
+  // 리포트에 없는 주문은 송장·무게가 없어 포장대장과 수출신고가 서로 달라진다 — 빼고 알린다
+  const notInReport = targets.filter((o) => !dhlReportMap[o.orderNumber]);
+  if (notInReport.length > 0) {
+    targets = targets.filter((o) => dhlReportMap[o.orderNumber]);
+    alert(`DHL 리포트에 없는 주문 ${notInReport.length}건은 제외합니다: ${notInReport.map((o) => o.orderNumber).join(", ")}`);
+    if (targets.length === 0) return;
   }
 
   targets = sortByOrderNumber(targets); // 주문번호 오름차순 정렬 (원본과 동일)
