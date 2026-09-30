@@ -1,5 +1,5 @@
 // Supabase Edge Function: vendor-orders
-// VERSION-MARKER: 2026-09-30-initial
+// VERSION-MARKER: 2026-09-30-catalog-category
 // ------------------------------------------------------------------
 // 벤더 주문 시스템(geon_vsale)의 DHL 발송 주문을 int-shipping "벤더 발송건" 탭에 넘겨주는 읽기 전용 함수.
 // geon_vsale 테이블은 RLS로 service_role만 읽을 수 있어서 이 함수가 대신 읽는다. 아무것도 쓰지 않는다.
@@ -14,7 +14,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const VERSION = "2026-09-30-initial";
+const VERSION = "2026-09-30-catalog-category";
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -58,7 +58,7 @@ async function listOrders(days: number) {
       "id, order_no, invoice_no, status, created_at, ship_to, item_discount_pct, shipping_discount_pct, " +
         "shipping_cost_computed, shipping_cost_override, credit_amount, vendors(name), " +
         "order_items(product_name_snapshot, option_snapshot, qty, unit_price_snapshot, individual_discount_pct_snapshot, " +
-        "origin_snapshot, line_status, vendor_catalog_items(vendor_code, origin), products(category))",
+        "origin_snapshot, sku_snapshot, line_status, vendor_catalog_items(vendor_code, origin, products(category)), products(category))",
     )
     .eq("shipping_method", "DHL")
     .eq("is_external_shipment", false)
@@ -68,6 +68,24 @@ async function listOrders(days: number) {
     .order("created_at", { ascending: false })
     .limit(300);
   if (error) throw new Error(`벤더 주문 조회 실패: ${error.message}`);
+
+  // 카테고리: 벤더 주문 품목은 order_items.product_id가 비어 있고 카탈로그 품목(vendor_catalog_items.product_id)으로만
+  // 상품과 연결된다. 카탈로그에 없는 직접 추가 품목은 SKU(sku_snapshot = products.sku_code)로 찾는다.
+  const categoryOf = (it: any) => one(one(it.vendor_catalog_items)?.products)?.category ?? one(it.products)?.category ?? null;
+  const missingSkus = [
+    ...new Set(
+      (data ?? []).flatMap((o: any) => (o.order_items ?? []).filter((it: any) => !categoryOf(it) && it.sku_snapshot).map((it: any) => it.sku_snapshot)),
+    ),
+  ];
+  const categoryBySku = new Map<string, string>();
+  if (missingSkus.length > 0) {
+    const { data: products, error: productError } = await supabase
+      .from("products")
+      .select("sku_code, category")
+      .in("sku_code", missingSkus);
+    if (productError) throw new Error(`상품 카테고리 조회 실패: ${productError.message}`);
+    for (const p of products ?? []) if (p.category) categoryBySku.set(p.sku_code, p.category);
+  }
 
   return (data ?? []).map((o: any) => {
     const items = [...(o.order_items ?? [])].sort((a: any, b: any) => {
@@ -98,7 +116,7 @@ async function listOrders(days: number) {
         individualDiscountPct: Number(it.individual_discount_pct_snapshot ?? 0),
         // 카탈로그 품목은 vendor_catalog_items.origin, 직접 추가한 품목은 origin_snapshot
         origin: it.origin_snapshot ?? one(it.vendor_catalog_items)?.origin ?? null,
-        category: one(it.products)?.category ?? null,
+        category: categoryOf(it) ?? categoryBySku.get(it.sku_snapshot) ?? null,
         vendorCode: vendorCodeOf(it.vendor_catalog_items) ?? null,
       })),
     };

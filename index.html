@@ -3118,7 +3118,7 @@ function openVendorModal(mode) {
             <tr class="${origin ? "" : "missing"}">
               <td>${li + 1}</td>
               <td>${escapeHtml(l.name)}${l.option ? ` <span style="color:var(--text-dim);">/ ${escapeHtml(l.option)}</span>` : ""}</td>
-              <td>${escapeHtml(l.category || "")}</td>
+              <td>${l.category ? escapeHtml(l.category) : '<span style="color:var(--danger);" title="상품 카테고리를 찾지 못해 품목명을 직접 확인해야 합니다">없음</span>'}</td>
               <td style="text-align:right;">${l.qty.toLocaleString()}</td>
               <td style="text-align:right;">$${l.declaredUnitPrice}</td>
               <td><select class="vendor-item-name" data-order="${oi}" data-line="${li}">${options}</select></td>
