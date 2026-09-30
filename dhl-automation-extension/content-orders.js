@@ -31,6 +31,10 @@ const SELECTORS = {
   itemModal: ".blazored-modal.order-item-create-modal",
   sectionToggle: ".items-display-toggle", // 주문 상세 각 영역(Items 등) 제목 옆 펼치기/접기(∨/∧) 버튼
   orderDescItem: ".ssit-order-desc-item", // "Reference # 7192060100771" 등 주문 상단 정보
+  // 2026-09-30 저장본(+ ADD ITEM 누른 상태) 기준
+  addItemButton: "button.ssit-order-action-add", // Items 아래 "+ ADD ITEM" — 표 맨 아래에 빈 줄이 생긴다
+  itemMenuButton: "button.grid-button-ellipsis", // 품목 줄 오른쪽 ⋮ → Duplicate / Delete
+  accountName: ".ssi-profile-username", // 오른쪽 위 로그인 계정 (일반: 이메일, B2B: "GMI(B2B)_…")
 };
 
 const DHL_ORDERS_URL = "https://app2.dhlexpresscommerce.com/orders";
@@ -59,6 +63,7 @@ main().catch((err) => {
 });
 
 async function main() {
+  await checkDecAccount();
   if (isOrderDetailPage()) {
     await runOnDetailPage();
     return;
@@ -323,7 +328,7 @@ async function runPriceReadOnDetailPage(current) {
   if (!pageShowsOrderNumber(current.orderNumber)) {
     throw new Error(`열린 상세 화면이 ${current.orderNumber} 주문이 아닙니다.`);
   }
-  const rows = readItemRows(grid).map(({ name, sku, qty, unitPrice }) => ({ name, sku, qty, unitPrice }));
+  const rows = readItemRows(grid).map(({ name, sku, qty, shipQty, unitPrice }) => ({ name, sku, qty, shipQty, unitPrice }));
   const reference = readOrderReference();
   const { dhlReadQueue = [] } = await storageGet(["dhlReadQueue"]);
   await recordReadResult(current.orderNumber, { rows, reference }, dhlReadQueue);
@@ -375,12 +380,16 @@ async function runPriceEditOnDetailPage() {
     throw new Error(`열린 상세 화면이 ${current.orderNumber} 주문이 아닙니다.`);
   }
 
-  const assignments = matchItemsToRows(grid, current.items);
+  const reconcile = Array.isArray(current.lines);
+  const assignments = reconcile ? [] : matchItemsToRows(grid, current.items);
 
   if (current.stage === "verify") {
     // 표가 글자로 표시될 수도 있어 입력칸이 아니라 읽어 둔 값(unitPrice)으로 비교한다
-    const mismatches = assignments.filter(({ unitPrice, item }) => !samePrice(unitPrice, item.unitPrice));
-    if (mismatches.length === 0) {
+    const mismatches = reconcile
+      ? []
+      : assignments.filter(({ unitPrice, item }) => !samePrice(unitPrice, item.unitPrice));
+    const leftover = reconcile ? planNextItemOp(readItemRows(grid), current.lines, current.deletes || []) : null;
+    if (mismatches.length === 0 && !leftover) {
       await storageSet({ dhlPriceCurrent: null });
       const { dhlPriceQueue = [] } = await storageGet(["dhlPriceQueue"]);
       chrome.runtime.sendMessage({
@@ -392,6 +401,11 @@ async function runPriceEditOnDetailPage() {
       return;
     }
     if (current.attempts + 1 >= PRICE_MAX_ATTEMPTS) {
+      if (leftover) {
+        const what = { delete: "삭제", qty: "SHIP 수량", price: "가액", add: "추가" }[leftover.kind];
+        const who = leftover.line?.sku || leftover.line?.title || leftover.target?.sku || leftover.target?.title || "";
+        throw new Error(`${current.orderNumber} 품목 수정이 저장되지 않았습니다 — ${who} ${what}. DHL에서 직접 확인해주세요.`);
+      }
       const detail = mismatches
         .map(({ unitPrice, item }) => `${item.sku || item.title}: ${unitPrice ?? "-"} (목표 ${formatPrice(item.unitPrice)})`)
         .join(", ");
@@ -401,6 +415,10 @@ async function runPriceEditOnDetailPage() {
     // 아래 edit 단계로 계속 진행 (재시도)
   }
 
+  if (reconcile) {
+    // 품목 대조 작업(1.4~): 삭제·수량·가액·추가를 한 번에 맞춘 뒤 SAVE는 한 번만 누른다(SAVE를 누르면 목록으로 이동).
+    await reconcileItems(current);
+  } else {
   // 사람이 하던 방식대로 품목마다 연필 → Item details 창 → UNIT PRICE → UPDATE ORDER, 끝나면 SAVE.
   // 펼친 표도 선택된 한 행만 입력칸이 생겨서 표 안에서 바로 고치는 건 불안정하다 — 연필이 있으면 항상 창으로 고친다.
   // 창을 닫으면 표가 다시 그려질 수 있어 품목마다 행을 새로 찾는다.
@@ -414,6 +432,7 @@ async function runPriceEditOnDetailPage() {
       setInputValue(priceInput, formatPrice(item.unitPrice));
       await sleep(150);
     }
+  }
   }
   await sleep(500);
 
@@ -499,15 +518,19 @@ function readItemRows(grid) {
     const name = cellValue(row, 0);
     const sku = skuCol == null ? "" : cellValue(row, skuCol);
     const priceInput = row.querySelector(`td[data-col-index="${priceCol}"] input`);
-    // Ship 컬럼은 "<input value=70> of 70" 형태 — 뒤의 " of N"이 주문 수량
+    // Ship 컬럼은 "<input value=70> of 70"(펼친 표) 또는 "70 of 70"(글자) 형태 — 앞이 보낼 수량(SHIP), 뒤 " of N"이 주문 수량
     const shipCell = row.querySelector(`td[data-col-index="${shipCol}"]`);
     const qtyMatch = shipCell?.textContent?.match(/of\s*(\d+)/);
-    const qty = qtyMatch ? Number(qtyMatch[1]) : Number(shipCell?.querySelector("input")?.value) || null;
+    const shipInput = shipCell?.querySelector("input");
+    const shipText = shipCell?.textContent?.match(/^\s*(\d+)\s*of/);
+    const shipQty = shipInput && shipInput.value !== "" ? Number(shipInput.value) : shipText ? Number(shipText[1]) : null;
+    const qty = qtyMatch ? Number(qtyMatch[1]) : shipQty;
     const priceText = cellValue(row, priceCol).replace(/[^0-9.\-]/g, "");
     return {
       name,
       sku,
       qty,
+      shipQty: shipQty ?? qty,
       unitPrice: priceText === "" ? null : parseFloat(priceText),
       normName: norm(name),
       normSku: norm(sku),
@@ -546,6 +569,208 @@ async function editPriceViaItemModal(rowEl, value, item) {
   const closed = await waitFor(() => !document.querySelector(SELECTORS.itemModal), 10000);
   if (!closed) throw new Error(`Update order 후 Item details 창이 닫히지 않았습니다(${label}).`);
   await sleep(800);
+}
+
+// ── 품목 대조(추가·삭제·수량·가액) ──────────────────────────────────────────
+// current.lines: Shopify 품목 전부 [{ sku, title, rowIndex, unitPrice(목표 단가|null), qty(목표 SHIP 수량|null), add(없을 때 추가할 값|null) }]
+// current.deletes: DEC에서 지울 품목 [{ sku, title, rowIndex }]
+// SAVE 전에 목록으로 튕기면 저장 안 된 변경은 전부 사라지므로, 매번 지금 표를 읽고 "남은 일"을 다시 계산한다.
+// 한 번에 하나만 처리하고 표를 다시 읽는다 — 행을 지우거나 추가하면 표가 다시 그려져 행 위치가 바뀌기 때문.
+const RECONCILE_MAX_STEPS = 200;
+
+async function reconcileItems(current) {
+  const done = { add: 0, del: 0, qty: 0, price: 0 };
+  for (let step = 0; step < RECONCILE_MAX_STEPS; step++) {
+    const rows = readItemRows(pickItemsGrid());
+    const op = planNextItemOp(rows, current.lines, current.deletes || []);
+    if (!op) return done;
+    const label = op.line?.sku || op.line?.title || op.target?.sku || op.target?.title || "";
+    if (op.kind === "delete") {
+      await deleteItemRow(rows[op.rowIndex].rowEl, rows.length, label);
+      done.del++;
+    } else if (op.kind === "qty" || op.kind === "price") {
+      const fields = {};
+      if (op.kind === "qty") {
+        fields["qty to ship"] = String(op.line.qty);
+        if (rows[op.rowIndex].qty !== null && op.line.qty > rows[op.rowIndex].qty) fields["qty ordered"] = String(op.line.qty);
+        // 같은 품목의 단가도 바꿔야 하면 창을 한 번만 열어 같이 고친다
+        if (Number.isFinite(op.line.unitPrice) && !samePrice(rows[op.rowIndex].unitPrice, op.line.unitPrice)) {
+          fields["unit price"] = formatPrice(op.line.unitPrice);
+        }
+      } else {
+        fields["unit price"] = formatPrice(op.line.unitPrice);
+      }
+      await editViaItemModal(rows[op.rowIndex].rowEl, fields, label);
+      done[op.kind]++;
+    } else if (op.kind === "add") {
+      await addItemRow(op.line, rows.length, label);
+      done.add++;
+    }
+  }
+  throw new Error(`${current.orderNumber} 품목 수정이 끝나지 않습니다(${RECONCILE_MAX_STEPS}단계 초과). DHL에서 직접 확인해주세요.`);
+}
+
+// 지금 표(rows)와 목표(lines/deletes)를 비교해 다음에 할 일 하나를 고른다(없으면 null). 순서: 삭제 → 수량 → 가액 → 추가.
+function planNextItemOp(rows, lines, deletes) {
+  const used = new Set();
+  const nameMatches = (r, title) =>
+    r.normName && title && (r.normName === title || title.startsWith(r.normName) || r.normName.startsWith(title));
+  const isBlank = (r) => !r.normName && !r.normSku;
+  const matchRow = (key, allowIndex) => {
+    const sku = norm(key.sku);
+    const title = norm(key.title);
+    const byIndex = allowIndex && Number.isInteger(key.rowIndex) ? key.rowIndex : -1;
+    const ok = (r, i) => !used.has(i) && !isBlank(r) && (sku ? r.normSku === sku : nameMatches(r, title));
+    if (byIndex >= 0 && rows[byIndex] && ok(rows[byIndex], byIndex)) return byIndex;
+    let i = rows.findIndex(ok);
+    // SKU로 못 찾으면(DEC에 SKU가 비어 있는 행) 이름으로 한 번 더
+    if (i < 0 && sku && title) i = rows.findIndex((r, j) => !used.has(j) && !isBlank(r) && !r.normSku && nameMatches(r, title));
+    return i;
+  };
+  // 1) Shopify 품목이 차지하는 행
+  const lineRow = lines.map((line) => {
+    const i = matchRow(line, true);
+    if (i >= 0) used.add(i);
+    return i;
+  });
+  // 2) 삭제: Shopify 품목에 쓰이지 않은 행 중 삭제 대상과 같은 품목 (+ 추가하다 남은 빈 줄)
+  for (const target of deletes) {
+    const i = matchRow(target, true);
+    if (i >= 0) return { kind: "delete", rowIndex: i, target };
+  }
+  const blank = rows.findIndex((r, i) => !used.has(i) && isBlank(r));
+  if (blank >= 0) return { kind: "delete", rowIndex: blank, target: { title: "(빈 줄)" } };
+  // 3) 수량
+  for (let k = 0; k < lines.length; k++) {
+    const line = lines[k];
+    const i = lineRow[k];
+    if (i >= 0 && Number.isFinite(line.qty) && rows[i].shipQty !== null && Number(rows[i].shipQty) !== Number(line.qty)) {
+      return { kind: "qty", rowIndex: i, line };
+    }
+  }
+  // 4) 가액
+  for (let k = 0; k < lines.length; k++) {
+    const line = lines[k];
+    const i = lineRow[k];
+    if (i >= 0 && Number.isFinite(line.unitPrice) && !samePrice(rows[i].unitPrice, line.unitPrice)) {
+      return { kind: "price", rowIndex: i, line };
+    }
+  }
+  // 5) 추가: DEC에 없는 Shopify 품목 중 추가하기로 한 것
+  for (let k = 0; k < lines.length; k++) {
+    if (lineRow[k] < 0 && lines[k].add) return { kind: "add", line: { ...lines[k], ...lines[k].add } };
+  }
+  return null;
+}
+
+// 연필 → Item details 창에서 여러 칸을 바꾸고 Update order. fields: { "unit price": "12.00", "qty to ship": "2", ... }
+// (키는 창의 칸 이름을 소문자로 — Item name / Item SKU / Qty Ordered / Qty To Ship / Unit Price / Weight(kg))
+async function editViaItemModal(rowEl, fields, label) {
+  const editBtn = rowEl.querySelector(SELECTORS.itemEditButton);
+  if (!editBtn) throw new Error(`품목 편집 버튼을 찾지 못했습니다(${label}).`);
+  editBtn.click();
+  const modal = await waitFor(() => document.querySelector(SELECTORS.itemModal), 8000);
+  if (!modal) throw new Error(`Item details 창이 열리지 않았습니다(${label}).`);
+  await sleep(500);
+
+  for (const [name, value] of Object.entries(fields)) {
+    const field = Array.from(modal.querySelectorAll(".add-item-input")).find(
+      (el) => el.querySelector(".modal-label")?.textContent?.trim().toLowerCase() === name
+    );
+    const input = field?.querySelector("input");
+    if (!input) throw new Error(`Item details 창에서 "${name}" 칸을 찾지 못했습니다(${label}).`);
+    setInputValue(input, value);
+    await sleep(250);
+  }
+
+  const updateBtn = Array.from(modal.querySelectorAll("button")).find(
+    (b) => b.textContent?.trim().toLowerCase() === "update order"
+  );
+  if (!updateBtn) throw new Error(`Item details 창에서 Update order 버튼을 찾지 못했습니다(${label}).`);
+  updateBtn.click();
+  const closed = await waitFor(() => !document.querySelector(SELECTORS.itemModal), 10000);
+  if (!closed) throw new Error(`Update order 후 Item details 창이 닫히지 않았습니다(${label}). 입력값을 확인해주세요.`);
+  await sleep(800);
+}
+
+// "+ ADD ITEM" → 표 맨 아래 빈 줄 → 그 줄의 연필 → Item details 창에 품목명·SKU·수량·단가·무게를 넣는다
+async function addItemRow(line, rowCountBefore, label) {
+  const addBtn =
+    document.querySelector(SELECTORS.addItemButton) ||
+    Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.trim().toLowerCase() === "add item");
+  if (!addBtn) throw new Error(`"+ ADD ITEM" 버튼을 찾지 못했습니다(${label}).`);
+  addBtn.click();
+  const grown = await waitFor(() => {
+    const rows = readItemRows(pickItemsGrid());
+    return rows.length > rowCountBefore ? rows : null;
+  }, 8000);
+  if (!grown) throw new Error(`"+ ADD ITEM"을 눌렀는데 새 줄이 생기지 않았습니다(${label}).`);
+  const newRow = grown[grown.length - 1];
+  const fields = { "item name": line.name, "qty ordered": String(line.qty), "qty to ship": String(line.qty), "unit price": formatPrice(line.unitPrice), "weight(kg)": String(line.weightKg) };
+  if (line.addSku) fields["item sku"] = line.addSku;
+  await editViaItemModal(newRow.rowEl, fields, label);
+  const filled = await waitFor(() => readItemRows(pickItemsGrid()).some((r) => norm(r.name) === norm(line.name) || (line.addSku && norm(r.sku) === norm(line.addSku))), 5000);
+  if (!filled) throw new Error(`추가한 품목이 표에 보이지 않습니다(${label}).`);
+}
+
+// 품목 줄 오른쪽 ⋮ → Delete (확인 창이 뜨면 확인) → 줄이 하나 줄었는지 확인
+async function deleteItemRow(rowEl, rowCountBefore, label) {
+  const menuBtn = rowEl.querySelector(SELECTORS.itemMenuButton);
+  if (!menuBtn) throw new Error(`품목 줄의 ⋮ 버튼을 찾지 못했습니다(${label}).`);
+  menuBtn.click();
+  const isVisible = (el) => el.offsetParent !== null || el.getClientRects().length > 0;
+  const deleteItem = await waitFor(() => {
+    const candidates = [
+      ...rowEl.querySelectorAll(".ssit-dropdown-container *"),
+      ...document.querySelectorAll(".k-popup *, .dropdown-menu *, [role='menu'] *, [role='menuitem'], li, a, button"),
+    ];
+    return candidates.find((el) => el.children.length === 0 && el.textContent?.trim().toLowerCase() === "delete" && isVisible(el));
+  }, 5000);
+  if (!deleteItem) throw new Error(`⋮ 메뉴에서 Delete를 찾지 못했습니다(${label}).`);
+  (deleteItem.closest("a, button, li, [role='menuitem']") ?? deleteItem).click();
+
+  // 삭제 확인 창이 뜨는 경우 대비 — "Yes / Delete / OK / Confirm" 버튼을 누른다
+  const confirmBtn = await waitFor(() => {
+    const dialogs = document.querySelectorAll(".blazored-modal, .k-dialog, .modal.show, [role='dialog']");
+    for (const d of dialogs) {
+      const b = Array.from(d.querySelectorAll("button")).find((x) =>
+        ["yes", "delete", "ok", "confirm", "remove"].includes(x.textContent?.trim().toLowerCase())
+      );
+      if (b && isVisible(b)) return b;
+    }
+    return null;
+  }, 1500);
+  if (confirmBtn) confirmBtn.click();
+
+  const shrunk = await waitFor(() => readItemRows(pickItemsGrid()).length < rowCountBefore, 8000);
+  if (!shrunk) throw new Error(`Delete를 눌렀는데 품목 줄이 지워지지 않았습니다(${label}).`);
+  await sleep(500);
+}
+
+// DEC 로그인 계정 확인 — 일반 주문은 일반 계정에서만. B2B 계정 상태로 작업하면 주문이 B2B 계정에 들어간다.
+// int-shipping이 작업을 시작할 때 기대 계정(dhlExpectedAccount)을 넘겨준다. 계정 표시를 못 찾으면 막지 않는다.
+async function checkDecAccount() {
+  const { dhlExpectedAccount = null, dhlJob = null } = await storageGet(["dhlExpectedAccount", "dhlJob"]);
+  if (!dhlExpectedAccount || !dhlJob) return;
+  // 같은 작업에서 이미 확인했으면 화면마다 다시 기다리지 않는다
+  const okKey = `dhlAccountOk:${dhlJob.startedAt}`;
+  if (sessionStorage.getItem(okKey)) return;
+  const el = await waitFor(() => {
+    const e = document.querySelector(SELECTORS.accountName);
+    return e && e.textContent.trim() ? e : null;
+  }, 8000);
+  if (!el) {
+    console.warn("[DHL 자동화] DEC 로그인 계정 표시를 찾지 못해 계정 확인을 건너뜁니다.");
+    return;
+  }
+  const actual = el.textContent.trim();
+  if (norm(actual) === norm(dhlExpectedAccount)) {
+    sessionStorage.setItem(okKey, "1");
+    return;
+  }
+  {
+    throw new Error(`DEC 계정이 ${actual}입니다. 일반 계정(${dhlExpectedAccount})으로 바꾼 뒤 다시 시도해주세요. (아무것도 바꾸지 않았습니다)`);
+  }
 }
 
 // 화면에 Items 표가 둘 이상 그려질 수 있어(요약 표 + 편집 표) 입력칸이 있는 편집 표를 우선한다.
