@@ -290,6 +290,7 @@
     <div class="tab" data-tab="domestic">국내 배송건 <span class="count" id="count-domestic">0</span></div>
     <div class="tab" data-tab="groupbuy">Group Buy (제외됨) <span class="count" id="count-groupbuy">0</span></div>
     <div class="tab" data-tab="processed">처리완료 조회</div>
+    <div class="tab" data-tab="vendor">벤더 발송건 <span class="count" id="count-vendor">-</span></div>
   </div>
 
   <div class="toolbar">
@@ -315,6 +316,16 @@
   </div>
   <div id="dhl-log" style="font-size:12px; margin-bottom:10px;"></div>
 
+  <div id="vendor-toolbar" class="toolbar" style="display:none; flex-wrap:wrap;">
+    <select id="vendor-status-filter" title="표시할 주문 상태">
+      <option value="입금확인">입금확인 주문만</option>
+      <option value="all">전체 (취소 제외, 최근 90일)</option>
+    </select>
+    <button id="vendor-csv-btn" class="primary" title="체크한 주문으로 DEC 업로드용 CSV를 만듭니다">DHL CSV 만들기</button>
+    <button id="vendor-gmi-btn" title="체크한 주문의 운송장번호·박스 수·무게를 입력해 수출신고 파일을 만듭니다">수출신고 파일 만들기</button>
+    <span id="vendor-status" style="font-size:12px; color:var(--text-dim);"></span>
+  </div>
+
   <div id="processed-search-toolbar" class="toolbar" style="display:none;">
     <input type="text" id="processed-search-input" placeholder="주문번호로 검색 (예: 28123)" style="width:220px;" />
     <button id="processed-search-clear" style="display:none;">전체 목록 보기</button>
@@ -325,6 +336,19 @@
     <div class="loading">로그인 후 주문을 불러옵니다...</div>
   </div>
 </main>
+
+<div id="vendor-modal" class="modal-overlay">
+  <div class="modal-box origin-modal-box" style="width:min(1100px, 95vw);">
+    <h2 id="vendor-modal-title">벤더 주문 확인</h2>
+    <p id="vendor-modal-desc" style="font-size:12px; color:var(--text-dim); margin-top:-8px;"></p>
+    <div id="vendor-modal-body"></div>
+    <div class="modal-error" id="vendor-modal-error"></div>
+    <div class="modal-actions">
+      <button id="vendor-modal-cancel">취소</button>
+      <button class="primary" id="vendor-modal-confirm">파일 만들기</button>
+    </div>
+  </div>
+</div>
 
 <div id="address-modal" class="modal-overlay">
   <div class="modal-box">
@@ -789,6 +813,11 @@ function render() {
     currentTab === "dhl" || currentTab === "groupbuy" ? "flex" : "none";
   document.getElementById("processed-search-toolbar").style.display =
     currentTab === "processed" ? "flex" : "none";
+  document.getElementById("vendor-toolbar").style.display = currentTab === "vendor" ? "flex" : "none";
+  if (currentTab === "vendor") {
+    renderVendorOrders();
+    return;
+  }
   // 포장대장(송장번호)과 수출신고 파일(송장번호·무게·배송비)은 DHL 리포트가 있어야 만들 수 있다 —
   // 리포트 없이 누르면 송장번호 빈 포장대장과 내용 0건 수출신고 파일이 나와서 아예 못 누르게 막는다.
   const exportBtn = document.getElementById("dhl-export-btn");
@@ -1215,13 +1244,17 @@ document.querySelectorAll(".tab").forEach((tab) => {
     currentTab = tab.dataset.tab;
     if (currentTab === "processed" && !processedLoaded) {
       loadProcessedOrders();
+    } else if (currentTab === "vendor" && !vendorLoaded) {
+      loadVendorOrders();
     } else {
       render();
     }
   });
 });
 
-document.getElementById("refresh-btn").addEventListener("click", loadOrders);
+document.getElementById("refresh-btn").addEventListener("click", () =>
+  currentTab === "vendor" ? loadVendorOrders() : loadOrders()
+);
 
 // "처리완료 조회" 탭의 주문번호 검색. 입력창 자체는 render()가 다시 그리는 #table-container
 // 밖의 고정 위치에 있어서, 검색 결과가 갱신돼도 입력 중이던 포커스가 끊기지 않는다.
@@ -2721,6 +2754,38 @@ function exportChulgobon(orders) {
 }
 
 function exportGmi(orders, originMap) {
+  const blocks = [];
+  for (const order of orders) {
+    const match = dhlReportMap[order.orderNumber];
+    if (!match) continue;
+    const recipientName =
+      match.shipto ||
+      [order.shippingAddress?.firstName, order.shippingAddress?.lastName].filter(Boolean).join(" ");
+    blocks.push({
+      awb: match.tracking || "",
+      buyer: recipientName.toUpperCase(),
+      country: order.shippingAddress?.countryCodeV2 || "",
+      ct: match.ct || "1",
+      weight: match.weight || "",
+      tradeType: 15,
+      // SKU 없어도 실제 출고 물품이므로 전부 포함
+      lines: order.lineItems.map((li, idx) => ({
+        qty: li.quantity,
+        unitPrice: gmiUnitPrice(li),
+        model: li.title,
+        origin: originMap[originKey(order, li, idx)] || "",
+      })),
+      shipping: match.freight && parseFloat(match.freight) > 0 ? parseFloat(match.freight) : 0,
+    });
+  }
+  const today = new Date();
+  const mmdd = `${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+  writeGmiWorkbook(blocks, `GMI_DEC 수출신고요청_${blocks.length}건_${mmdd}.xlsx`); // 실제로 들어간 주문 수
+}
+
+// GMI 수출신고 엑셀 작성 (Shopify 주문·벤더 주문 공용). block = 주문 1건:
+// { awb, buyer, country, ct, weight, tradeType(거래구분), lines: [{ qty, unitPrice, model(모델명/규격), origin }], shipping }
+function writeGmiWorkbook(blocks, fileName) {
   const header = [
     "AWB NO", "구매자", "목적국", "CT\n(WB)", "총중량\n(WB)", "수량", "단가", "금액", "총신고금액\n(WB)",
     "신고품명", "HS CODE\n(품목별)", "모델명\n(규격)", "인도조건", "화폐단위", "환급유무", "원산지",
@@ -2728,67 +2793,53 @@ function exportGmi(orders, originMap) {
   ];
   const rows = [
     ["■DHL 수출신고서 : GMI"],
-    ["수량 ", 0, "개"], // 0은 아래에서 실제 블록 수로 갱신
+    ["수량 ", blocks.length, "개"],
     header,
   ];
   const merges = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 2 } }]; // 제목행 A1:C1 병합 (좌측정렬)
 
-  let blockCount = 0;
-
-  for (const order of orders) {
-    const match = dhlReportMap[order.orderNumber];
-    if (!match) continue;
-    const country = order.shippingAddress?.countryCodeV2 || "";
-    const recipientName =
-      match.shipto ||
-      [order.shippingAddress?.firstName, order.shippingAddress?.lastName].filter(Boolean).join(" ");
-
-    const itemLines = order.lineItems; // SKU 없어도 실제 출고 물품이므로 전부 포함
+  for (const block of blocks) {
     const blockStartRow = rows.length;
     let blockTotal = 0;
     let firstRow = true;
+    const lead = () => {
+      const cells = firstRow
+        ? [block.awb, block.buyer, block.country, block.ct, block.weight]
+        : ["", "", "", "", ""];
+      firstRow = false;
+      return cells;
+    };
 
-    itemLines.forEach((li, idx) => {
-      const unitPrice = gmiUnitPrice(li);
-      const amount = Math.round(unitPrice * li.quantity * 100) / 100;
+    for (const line of block.lines) {
+      const amount = Math.round(line.unitPrice * line.qty * 100) / 100;
       blockTotal += amount;
       rows.push([
-        firstRow ? match.tracking || "" : "",
-        firstRow ? recipientName.toUpperCase() : "",
-        firstRow ? country : "",
-        firstRow ? match.ct || "1" : "",
-        firstRow ? match.weight || "" : "",
-        li.quantity,
-        unitPrice || "",
+        ...lead(),
+        line.qty,
+        line.unitPrice || "",
         amount || "",
         "",
         "KEYBOARD PARTS",
         "8473.30-9000",
-        li.title,
+        line.model,
         "DAP",
         "USD",
         "Y",
-        originMap[originKey(order, li, idx)] || "",
+        line.origin,
         "",
-        15,
+        block.tradeType,
         1304377108,
         "미상",
       ]);
-      firstRow = false;
-    });
+    }
 
-    if (match.freight && parseFloat(match.freight) > 0) {
-      const shippingAmount = parseFloat(match.freight);
-      blockTotal += shippingAmount;
+    if (block.shipping > 0) {
+      blockTotal += block.shipping;
       rows.push([
-        firstRow ? match.tracking || "" : "",
-        firstRow ? recipientName.toUpperCase() : "",
-        firstRow ? country : "",
-        firstRow ? match.ct || "1" : "",
-        firstRow ? match.weight || "" : "",
+        ...lead(),
         1,
-        shippingAmount,
-        shippingAmount,
+        block.shipping,
+        block.shipping,
         "",
         "SHIPPING FEE",
         "",
@@ -2802,12 +2853,10 @@ function exportGmi(orders, originMap) {
         "", // 사업자번호(수출자)
         "", // 사업자번호(제조자)
       ]);
-      firstRow = false;
     }
 
     const blockEndRow = rows.length - 1;
     rows[blockStartRow][8] = Math.round(blockTotal * 100) / 100;
-    blockCount++;
 
     // 품목+배송비가 2줄 이상인 블록만 병합
     if (blockEndRow > blockStartRow) {
@@ -2817,8 +2866,6 @@ function exportGmi(orders, originMap) {
       }
     }
   }
-
-  rows[1][1] = blockCount; // "수량" 행에 실제 처리된 주문 블록 수 반영
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!merges"] = merges;
@@ -2874,9 +2921,375 @@ function exportGmi(orders, originMap) {
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+  XLSX.writeFile(wb, fileName);
+}
+
+// ── 벤더 발송건 (geon_vsale 벤더 주문 → DEC B2B CSV / GMI 수출신고) ──────────────────
+// 1) 체크한 주문으로 DEC에 올릴 CSV를 만든다(품목마다 한 줄). 2) DEC에서 운송장이 나오면 주문마다
+// AWB·CT·총중량을 입력해 수출신고 파일을 만든다. 벤더 시스템에는 아무것도 쓰지 않는다(읽기 전용 vendor-orders 함수).
+let vendorOrders = [];
+let vendorLoaded = false;
+const selectedVendorOrderIds = new Set();
+let vendorModalMode = null; // "csv" | "gmi"
+let vendorModalTargets = [];
+
+const VENDOR_ITEM_NAMES = [
+  "Keyboard Switch",
+  "Keyboard Switch Spring",
+  "Keyboard PCB",
+  "Keyboard Plate",
+  "Keyboard DIY Kit",
+  "Keyboard Parts",
+];
+
+// 정해진 품목명: 상품명에 "Spring 14mm"처럼 mm 길이가 붙은 스프링 → Switch Spring (Leaf Spring 등은 제외),
+// 나머지는 상품 카테고리로. 확인 창에서 품목마다 바꿀 수 있다.
+function vendorItemName(item) {
+  if (/spring\s*\d+(\.\d+)?\s*mm/i.test(item.name || "")) return "Keyboard Switch Spring";
+  switch ((item.category || "").toLowerCase()) {
+    case "switch":
+      return "Keyboard Switch";
+    case "pcb":
+      return "Keyboard PCB";
+    case "plate":
+      return "Keyboard Plate";
+    case "housing":
+      return "Keyboard DIY Kit";
+    default:
+      return "Keyboard Parts";
+  }
+}
+
+const roundCents = (v) => Math.round(v * 100) / 100;
+
+// 벤더 시스템(geon_vsale) 인보이스와 같은 계산. 신고 단가는 품목 할인과 주문 전체 할인을 모두 반영한 단가.
+function vendorOrderFigures(order) {
+  const lines = order.items.map((it) => {
+    const net = it.individualDiscountPct > 0 ? roundCents(it.unitPrice * (1 - it.individualDiscountPct / 100)) : it.unitPrice;
+    const declared = order.itemDiscountPct > 0 ? roundCents(net * (1 - order.itemDiscountPct / 100)) : net;
+    return { ...it, netUnitPrice: net, declaredUnitPrice: declared };
+  });
+  const productSubtotal = roundCents(lines.reduce((sum, l) => sum + l.netUnitPrice * l.qty, 0));
+  const itemDiscount = order.itemDiscountPct > 0 ? roundCents(productSubtotal * (order.itemDiscountPct / 100)) : 0;
+  const shippingDiscount = order.shippingDiscountPct > 0 ? roundCents(order.shippingCost * (order.shippingDiscountPct / 100)) : 0;
+  const netShipping = roundCents(order.shippingCost - shippingDiscount);
+  const invoiceTotal = roundCents(productSubtotal - itemDiscount + netShipping - order.creditAmount);
+  const declaredItems = roundCents(lines.reduce((sum, l) => sum + roundCents(l.declaredUnitPrice * l.qty), 0));
+  return { lines, netShipping, invoiceTotal, declaredItems, declaredTotal: roundCents(declaredItems + netShipping) };
+}
+
+// DEC CSV Order Number: "B" + 인보이스 번호 숫자 (#ORD-260929001 / GMI260929001 → B260929001)
+function vendorCsvOrderNumber(order) {
+  return "B" + String(order.orderNo || "").replace(/[^0-9]/g, "");
+}
+
+async function loadVendorOrders() {
+  const container = document.getElementById("table-container");
+  container.innerHTML = '<div class="loading">벤더 주문을 불러오는 중...</div>';
+  try {
+    vendorOrders = (await callFunction("vendor-orders", { action: "list", days: 90 })) || [];
+    vendorLoaded = true;
+    const ids = new Set(vendorOrders.map((o) => o.id));
+    for (const id of [...selectedVendorOrderIds]) if (!ids.has(id)) selectedVendorOrderIds.delete(id);
+    render();
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state">벤더 주문 조회 실패: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function getVendorDisplayList() {
+  const filter = document.getElementById("vendor-status-filter").value;
+  return filter === "all" ? vendorOrders : vendorOrders.filter((o) => o.status === filter);
+}
+
+function renderVendorOrders() {
+  const container = document.getElementById("table-container");
+  const list = getVendorDisplayList();
+  document.getElementById("count-vendor").textContent = vendorLoaded
+    ? vendorOrders.filter((o) => o.status === "입금확인").length
+    : "-";
+  if (!vendorLoaded) {
+    container.innerHTML = '<div class="loading">벤더 주문을 불러오는 중...</div>';
+    return;
+  }
+  if (list.length === 0) {
+    container.innerHTML = '<div class="empty-state">해당하는 벤더 DHL 주문이 없습니다.</div>';
+    return;
+  }
+  const rows = list
+    .map((o) => {
+      const f = vendorOrderFigures(o);
+      const to = o.shipTo || {};
+      const created = o.createdAt ? new Date(o.createdAt).toLocaleDateString("ko-KR") : "";
+      return `
+        <tr>
+          <td><input type="checkbox" class="vendor-select" data-id="${escapeHtml(o.id)}" ${selectedVendorOrderIds.has(o.id) ? "checked" : ""} /></td>
+          <td><b>${escapeHtml(o.orderNo)}</b><br><span style="font-size:11px; color:var(--text-dim);">${escapeHtml(o.invoiceNo || "인보이스 없음")}</span></td>
+          <td>${escapeHtml(o.vendorName || "")}</td>
+          <td>${escapeHtml(to.company || to.name || "")}<br><span style="font-size:11px; color:var(--text-dim);">${escapeHtml([to.city, to.country_code].filter(Boolean).join(", "))}</span></td>
+          <td>${o.items.length}종 / ${o.items.reduce((s, it) => s + it.qty, 0).toLocaleString()}개</td>
+          <td>$${f.invoiceTotal.toFixed(2)}</td>
+          <td>${escapeHtml(o.status)}</td>
+          <td>${escapeHtml(created)}</td>
+        </tr>`;
+    })
+    .join("");
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="vendor-select-all" title="전체 선택/해제" /></th>
+          <th>주문번호</th>
+          <th>벤더</th>
+          <th>받는 곳</th>
+          <th>품목</th>
+          <th>인보이스 합계</th>
+          <th>상태</th>
+          <th>주문일</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  container.querySelectorAll(".vendor-select").forEach((cb) =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) selectedVendorOrderIds.add(cb.dataset.id);
+      else selectedVendorOrderIds.delete(cb.dataset.id);
+    })
+  );
+  const all = document.getElementById("vendor-select-all");
+  all.checked = list.every((o) => selectedVendorOrderIds.has(o.id));
+  all.addEventListener("change", () => {
+    for (const o of list) all.checked ? selectedVendorOrderIds.add(o.id) : selectedVendorOrderIds.delete(o.id);
+    renderVendorOrders();
+  });
+}
+
+document.getElementById("vendor-status-filter").addEventListener("change", () => render());
+document.getElementById("vendor-csv-btn").addEventListener("click", () => openVendorModal("csv"));
+document.getElementById("vendor-gmi-btn").addEventListener("click", () => openVendorModal("gmi"));
+document.getElementById("vendor-modal-cancel").addEventListener("click", () =>
+  document.getElementById("vendor-modal").classList.remove("visible")
+);
+
+function openVendorModal(mode) {
+  const statusEl = document.getElementById("vendor-status");
+  const targets = getVendorDisplayList().filter((o) => selectedVendorOrderIds.has(o.id));
+  if (targets.length === 0) {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = "주문을 체크박스로 선택해주세요.";
+    return;
+  }
+  statusEl.textContent = "";
+  vendorModalMode = mode;
+  vendorModalTargets = targets;
+  document.getElementById("vendor-modal-title").textContent =
+    mode === "csv" ? `DHL CSV 만들기 — ${targets.length}건` : `수출신고 파일 만들기 — ${targets.length}건`;
+  document.getElementById("vendor-modal-desc").textContent =
+    mode === "csv"
+      ? "품목명과 원산지를 확인하세요. 빨간 칸은 원산지가 비어 있는 품목입니다."
+      : "DEC에서 만든 운송장번호(AWB), 박스 수(CT), 총중량을 주문마다 입력하세요. 품목명·원산지도 확인하세요.";
+  document.getElementById("vendor-modal-confirm").textContent = mode === "csv" ? "CSV 만들기" : "수출신고 파일 만들기";
+
+  const body = targets
+    .map((o, oi) => {
+      const f = vendorOrderFigures(o);
+      const to = o.shipTo || {};
+      const gmiInputs =
+        mode === "gmi"
+          ? `<div style="display:flex; gap:10px; flex-wrap:wrap; margin:6px 0;">
+               <label>AWB <input type="text" class="vendor-awb" data-order="${oi}" style="width:130px;" /></label>
+               <label>CT <input type="text" class="vendor-ct" data-order="${oi}" value="1" style="width:50px;" /></label>
+               <label>총중량(kg) <input type="text" class="vendor-weight" data-order="${oi}" style="width:70px;" /></label>
+             </div>`
+          : "";
+      const diff = roundCents(f.declaredTotal - (f.invoiceTotal + o.creditAmount));
+      const notes = [];
+      if (o.itemDiscountPct > 0) notes.push(`주문 할인 ${o.itemDiscountPct}%를 단가에 반영`);
+      if (o.creditAmount > 0) notes.push(`⚠ 크레딧 $${o.creditAmount.toFixed(2)}은 신고금액에서 빼지 않음`);
+      if (Math.abs(diff) > 0.005) notes.push(`⚠ 할인 반영 단가의 반올림 때문에 인보이스보다 $${diff.toFixed(2)} 차이`);
+      const itemRows = f.lines
+        .map((l, li) => {
+          const mapped = vendorItemName(l);
+          const options = VENDOR_ITEM_NAMES.map(
+            (n) => `<option value="${n}" ${n === mapped ? "selected" : ""}>${n}</option>`
+          ).join("");
+          const origin = (l.origin || "").toUpperCase();
+          return `
+            <tr class="${origin ? "" : "missing"}">
+              <td>${li + 1}</td>
+              <td>${escapeHtml(l.name)}${l.option ? ` <span style="color:var(--text-dim);">/ ${escapeHtml(l.option)}</span>` : ""}</td>
+              <td>${escapeHtml(l.category || "")}</td>
+              <td style="text-align:right;">${l.qty.toLocaleString()}</td>
+              <td style="text-align:right;">$${l.declaredUnitPrice}</td>
+              <td><select class="vendor-item-name" data-order="${oi}" data-line="${li}">${options}</select></td>
+              <td><input type="text" class="vendor-origin" data-order="${oi}" data-line="${li}" value="${escapeHtml(origin)}" maxlength="2" style="width:44px;" /></td>
+            </tr>`;
+        })
+        .join("");
+      return `
+        <div style="border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:12px;">
+          <div><b>${escapeHtml(o.orderNo)}</b> (${escapeHtml(vendorCsvOrderNumber(o))}) · ${escapeHtml(o.vendorName || "")} →
+            ${escapeHtml(to.company || to.name || "")}, ${escapeHtml(to.country_code || "")}</div>
+          ${gmiInputs}
+          <table class="origin-table">
+            <thead><tr><th>No.</th><th>상품</th><th>카테고리</th><th>수량</th><th>신고 단가</th><th>품목명</th><th>원산지</th></tr></thead>
+            <tbody>${itemRows}</tbody>
+          </table>
+          <div style="font-size:12px; margin-top:6px;">
+            품목 $${f.declaredItems.toFixed(2)} + 배송비 $${f.netShipping.toFixed(2)} = <b>신고 합계 $${f.declaredTotal.toFixed(2)}</b>
+            (인보이스 Grand Total $${f.invoiceTotal.toFixed(2)})
+            ${notes.length ? `<br><span style="color:var(--danger);">${notes.map(escapeHtml).join(" · ")}</span>` : ""}
+          </div>
+        </div>`;
+    })
+    .join("");
+  document.getElementById("vendor-modal-body").innerHTML = body;
+  document.getElementById("vendor-modal-error").textContent = "";
+  document.querySelectorAll("#vendor-modal-body .vendor-origin").forEach((input) =>
+    input.addEventListener("input", () => input.closest("tr").classList.toggle("missing", !input.value.trim()))
+  );
+  document.getElementById("vendor-modal").classList.add("visible");
+}
+
+// 확인 창의 입력값(품목명·원산지·AWB 등)을 주문별로 모은다
+function collectVendorModalInput() {
+  const errors = [];
+  const orders = vendorModalTargets.map((o, oi) => {
+    const f = vendorOrderFigures(o);
+    const lines = f.lines.map((l, li) => {
+      const name = document.querySelector(`.vendor-item-name[data-order="${oi}"][data-line="${li}"]`).value;
+      const origin = document.querySelector(`.vendor-origin[data-order="${oi}"][data-line="${li}"]`).value.trim().toUpperCase();
+      if (!origin) errors.push(`${o.orderNo} ${li + 1}번 품목의 원산지가 비어 있습니다.`);
+      return { ...l, itemName: name, origin };
+    });
+    const entry = { order: o, figures: f, lines };
+    if (vendorModalMode === "gmi") {
+      entry.awb = document.querySelector(`.vendor-awb[data-order="${oi}"]`).value.trim();
+      entry.ct = document.querySelector(`.vendor-ct[data-order="${oi}"]`).value.trim() || "1";
+      entry.weight = document.querySelector(`.vendor-weight[data-order="${oi}"]`).value.trim();
+      if (!entry.awb) errors.push(`${o.orderNo}의 운송장번호(AWB)를 입력해주세요.`);
+      if (!entry.weight) errors.push(`${o.orderNo}의 총중량을 입력해주세요.`);
+    }
+    return entry;
+  });
+  return { orders, errors };
+}
+
+document.getElementById("vendor-modal-confirm").addEventListener("click", () => {
+  const errorEl = document.getElementById("vendor-modal-error");
+  const { orders, errors } = collectVendorModalInput();
+  if (errors.length) {
+    errorEl.textContent = errors.slice(0, 5).join(" / ") + (errors.length > 5 ? ` 외 ${errors.length - 5}건` : "");
+    return;
+  }
+  try {
+    if (vendorModalMode === "csv") exportVendorCsv(orders);
+    else exportVendorGmi(orders);
+  } catch (err) {
+    errorEl.textContent = err.message;
+    return;
+  }
+  document.getElementById("vendor-modal").classList.remove("visible");
+  const statusEl = document.getElementById("vendor-status");
+  statusEl.style.color = "";
+  statusEl.textContent = `${vendorModalMode === "csv" ? "DHL CSV" : "수출신고 파일"} 생성 완료 — ${orders.length}건`;
+});
+
+// DEC B2B 업로드 템플릿 헤더(58열). 마지막 열 이름의 한글은 템플릿과 같은 CP949 바이트로 쓴다.
+const DEC_CSV_HEADER_ASCII =
+  "Order Number,Date,To Name,Destination Building,Destination Street,Destination Suburb,Destination City,Destination Postcode,Destination State,Destination Country,Destination Email,Destination Phone,Item Name,Item Price,Instructions,Weight,Shipping Method,Reference,SKU,Qty,Company,Signature Required,ATL,Country Code,Package Height,Package Width,Package Length,Carrier,Carrier Product Code,Carrier Product Unit Type,Declared Value Currency,Code,Color,Size,Contents,Dangerous Goods,Country of Manufacturer,DDP,,,,,,,,,,,,,,,Pay method,Biz num(Exporter),Biz num(Manufacturer),Tax Refund(Y/N),Export(Y)/Sample(N),Invoice Number(";
+const DEC_CSV_HEADER_TAIL_CP949 = [0xbc, 0xdb, 0xc7, 0xb0, 0xc0, 0xe5, 0x20, 0xb9, 0xf8, 0xc8, 0xa3, 0x29]; // "송품장 번호)"
+const DEC_CSV_COLUMNS = 58;
+
+// 템플릿 파일은 CP949라 데이터는 ASCII로만 쓴다 — 악센트는 떼고(é→e), 그 밖의 문자가 있으면 알린다
+function toCsvAscii(value, where, problems) {
+  const s = String(value ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (/[^\x20-\x7e]/.test(s)) problems.push(`${where}: "${value}"`);
+  return s;
+}
+function csvField(s) {
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+// 벤더 인보이스 주소 표기 그대로: 주소1, 주소2, "도시, 우편번호"를 쉼표로 잇는다 (이미 쉼표로 끝나면 그대로 붙임)
+function vendorStreet(to) {
+  const parts = [to.address1, to.address2, [to.city, to.postal].filter(Boolean).join(", ")]
+    .map((p) => String(p || "").trim())
+    .filter(Boolean);
+  return parts.reduce((acc, p) => (acc === "" ? p : acc.endsWith(",") ? acc + p : acc + "," + p), "");
+}
+
+function exportVendorCsv(entries) {
+  const problems = [];
+  const lines = [];
+  for (const { order, lines: items } of entries) {
+    const to = order.shipTo || {};
+    const where = order.orderNo;
+    const orderNumber = vendorCsvOrderNumber(order);
+    for (const item of items) {
+      const row = new Array(DEC_CSV_COLUMNS).fill("");
+      row[0] = orderNumber;
+      row[2] = toCsvAscii(to.company || to.name || "", `${where} 받는 사람`, problems);
+      row[4] = toCsvAscii(vendorStreet(to), `${where} 주소`, problems);
+      row[6] = toCsvAscii(String(to.city || "").toUpperCase(), `${where} 도시`, problems);
+      row[7] = toCsvAscii(to.postal || "", `${where} 우편번호`, problems);
+      row[8] = toCsvAscii(to.state || "", `${where} 주(State)`, problems);
+      row[9] = toCsvAscii(to.country_code || "", `${where} 국가`, problems);
+      row[10] = toCsvAscii(to.email || "", `${where} 이메일`, problems);
+      row[11] = toCsvAscii(to.phone || "", `${where} 전화번호`, problems);
+      row[12] = item.itemName;
+      row[13] = String(item.declaredUnitPrice);
+      row[19] = String(item.qty);
+      row[36] = item.origin;
+      lines.push(row.map(csvField).join(","));
+    }
+  }
+  if (problems.length) {
+    throw new Error(
+      "DHL CSV에 쓸 수 없는 문자(한글 등)가 있습니다. 벤더 주문의 배송지를 영문으로 고친 뒤 다시 만들어주세요 — " +
+        [...new Set(problems)].slice(0, 3).join(", ")
+    );
+  }
+  const enc = new TextEncoder();
+  const bytes = [
+    ...enc.encode(DEC_CSV_HEADER_ASCII),
+    ...DEC_CSV_HEADER_TAIL_CP949,
+    ...enc.encode("\r\n" + lines.join("\r\n") + "\r\n"),
+  ];
+  const blob = new Blob([new Uint8Array(bytes)], { type: "text/csv" });
   const today = new Date();
   const mmdd = `${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
-  XLSX.writeFile(wb, `GMI_DEC 수출신고요청_${blockCount}건_${mmdd}.xlsx`); // 실제로 들어간 주문 수
+  const name =
+    entries.length === 1
+      ? `DHL_CSV_${vendorCsvOrderNumber(entries[0].order)}_${mmdd}.csv`
+      : `DHL_CSV_벤더_${entries.length}건_${mmdd}.csv`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function exportVendorGmi(entries) {
+  const blocks = entries.map(({ order, figures, lines, awb, ct, weight }) => {
+    const to = order.shipTo || {};
+    const num = (v) => (v !== "" && Number.isFinite(Number(v)) ? Number(v) : v);
+    return {
+      awb: num(awb),
+      buyer: to.company || to.name || "",
+      country: to.country_code || "",
+      ct: num(ct),
+      weight: num(weight),
+      tradeType: 11,
+      lines: lines.map((l) => ({ qty: l.qty, unitPrice: l.declaredUnitPrice, model: l.itemName, origin: l.origin })),
+      shipping: figures.netShipping,
+    };
+  });
+  const today = new Date();
+  const mmdd = `${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+  writeGmiWorkbook(blocks, `GMI_DEC 수출신고요청_B2B_${blocks.length}건_${mmdd}.xlsx`);
 }
 
 function escapeHtml(str) {
