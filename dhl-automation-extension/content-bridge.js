@@ -22,17 +22,19 @@ window.addEventListener("message", (event) => {
 
   const orderNumbers = event.data.orderNumbers ?? [];
   const priceUpdates = event.data.priceUpdates ?? [];
+  // DEC 로그인 계정 확인용(1.4~) — 일반 주문 작업은 일반 계정에서만
+  const expectedAccount = typeof event.data.expectedAccount === "string" ? event.data.expectedAccount : null;
   let message;
   if (type === "DHL_AUTOMATE_READ") {
-    message = { type: "DHL_READ_PRICES_START", orderNumbers };
+    message = { type: "DHL_READ_PRICES_START", orderNumbers, expectedAccount };
   } else if (type === "DHL_PRICES_ONLY") {
-    message = { type: "DHL_PRICES_ONLY_START", orderNumbers, priceUpdates };
+    message = { type: "DHL_PRICES_ONLY_START", orderNumbers, priceUpdates, expectedAccount };
   } else {
     if (event.data.printLabels !== true) {
       postToPage({ type: "DHL_AUTOMATE_ERROR", error: "라벨 출력 요청이 명시되지 않아 처리하지 않았습니다." });
       return;
     }
-    message = { type: "DHL_AUTOMATE_START", orderNumbers, priceUpdates, printLabels: true };
+    message = { type: "DHL_AUTOMATE_START", orderNumbers, priceUpdates, printLabels: true, expectedAccount };
   }
 
   chrome.runtime.sendMessage(message, (response) => {

@@ -20,6 +20,7 @@ function resetJob() {
     "dhlReadResults",
     "dhlPriceOnly",
     "dhlPrintLabels",
+    "dhlExpectedAccount",
   ]);
 }
 
@@ -87,16 +88,16 @@ async function handleMessage(message, sender) {
       if (message.printLabels !== true) {
         return { ok: false, error: "라벨 출력 요청이 명시되지 않아 처리하지 않았습니다." };
       }
-      return startJob(message.orderNumbers, message.priceUpdates, false, sender.tab?.id, sender.tab?.windowId);
+      return startJob(message.orderNumbers, message.priceUpdates, false, sender.tab?.id, sender.tab?.windowId, message.expectedAccount);
 
     case "DHL_PRICES_ONLY_START":
-      return startJob(message.orderNumbers, message.priceUpdates, true, sender.tab?.id, sender.tab?.windowId);
+      return startJob(message.orderNumbers, message.priceUpdates, true, sender.tab?.id, sender.tab?.windowId, message.expectedAccount);
 
     case "PRICES_ONLY_DONE":
       return onPricesOnlyDone();
 
     case "DHL_READ_PRICES_START":
-      return startReadJob(message.orderNumbers, sender.tab?.id, sender.tab?.windowId);
+      return startReadJob(message.orderNumbers, sender.tab?.id, sender.tab?.windowId, message.expectedAccount);
 
     case "READ_PROGRESS":
       if (job) job.readDone = (job.readDone ?? 0) + 1;
@@ -166,8 +167,10 @@ async function handleMessage(message, sender) {
 
 // priceUpdates: [{ orderNumber, items: [{ sku, title, unitPrice }] }] — 라벨 출력 전에
 // DHL 주문 상세 화면에서 Unit Price를 이 값으로 바꿀 주문들(없으면 가액 수정 없이 바로 라벨 출력)
+//   1.4~: { orderNumber, items, lines, deletes } — lines/deletes가 있으면 품목 추가·삭제·SHIP 수량까지 맞춘다
 // priceOnly: true면 가액 수정까지만 하고 라벨 출력/리포트는 건너뛴다(주문번호로 가액만 확인·수정할 때)
-async function startJob(orderNumbers, priceUpdates, priceOnly, sourceTabId, sourceWindowId) {
+// expectedAccount: DEC 로그인 계정이 이것이 아니면 content-orders.js가 아무것도 하지 않고 멈춘다
+async function startJob(orderNumbers, priceUpdates, priceOnly, sourceTabId, sourceWindowId, expectedAccount) {
   if (!Array.isArray(orderNumbers) || orderNumbers.length === 0) {
     return { ok: false, error: "orderNumbers가 비어있습니다." };
   }
@@ -177,7 +180,7 @@ async function startJob(orderNumbers, priceUpdates, priceOnly, sourceTabId, sour
   }
 
   const priceQueue = Array.isArray(priceUpdates)
-    ? priceUpdates.filter((p) => orderNumbers.includes(p.orderNumber) && p.items?.length > 0)
+    ? priceUpdates.filter((p) => orderNumbers.includes(p.orderNumber) && (p.items?.length > 0 || hasItemChanges(p)))
     : [];
 
   job = {
@@ -196,6 +199,7 @@ async function startJob(orderNumbers, priceUpdates, priceOnly, sourceTabId, sour
     return { ok: false, error: "수정할 가액이 없습니다." };
   }
   await chrome.storage.local.set({
+    dhlExpectedAccount: expectedAccount || null,
     dhlTargetOrders: priceOnly ? [] : orderNumbers,
     dhlPriceQueue: priceQueue,
     dhlPriceCurrent: null,
@@ -218,10 +222,17 @@ async function startJob(orderNumbers, priceUpdates, priceOnly, sourceTabId, sour
   return { ok: true };
 }
 
+// 품목 대조(1.4~) 주문 중 실제로 바꿀 것이 있는지 — 추가·삭제·SHIP 수량·가액 중 하나라도
+function hasItemChanges(p) {
+  if (!Array.isArray(p.lines)) return false;
+  if (Array.isArray(p.deletes) && p.deletes.length > 0) return true;
+  return p.lines.some((l) => l.add || Number.isFinite(l.qty) || Number.isFinite(l.unitPrice));
+}
+
 // 가액 읽기 전용 작업: 주문마다 DHL 상세 화면의 Items 표를 읽기만 하고(수정 없음) 결과를 돌려준다.
 // int-shipping은 이 결과를 Shopify 단가와 비교해 불일치 품목을 보여주고, 사람이 고른 값으로
 // 다시 DHL_AUTOMATE(가액 수정 + 라벨 출력)를 시작한다.
-async function startReadJob(orderNumbers, sourceTabId, sourceWindowId) {
+async function startReadJob(orderNumbers, sourceTabId, sourceWindowId, expectedAccount) {
   if (!Array.isArray(orderNumbers) || orderNumbers.length === 0) {
     return { ok: false, error: "orderNumbers가 비어있습니다." };
   }
@@ -233,6 +244,7 @@ async function startReadJob(orderNumbers, sourceTabId, sourceWindowId) {
   job = { sourceTabId, sourceWindowId, dhlTabId: null, orderNumbers, phase: "read", readDone: 0, startedAt: Date.now() };
   saveJob();
   await chrome.storage.local.set({
+    dhlExpectedAccount: expectedAccount || null,
     dhlTargetOrders: [],
     dhlPrintLabels: false,
     dhlPriceQueue: [],

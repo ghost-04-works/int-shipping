@@ -1,5 +1,5 @@
 // Supabase Edge Function: shopify-orders
-// VERSION-MARKER: 2026-09-30-staff-only
+// VERSION-MARKER: 2026-09-30-line-weights
 // ------------------------------------------------------------------
 // Shopify Admin GraphQL API를 대신 호출해주는 프록시.
 // 브라우저에는 Shopify 액세스 토큰을 절대 노출하지 않고,
@@ -30,6 +30,11 @@
 //
 //   { "action": "version" } -> 배포된 함수 버전 문자열
 //
+//   { "action": "lineItemWeights", "lineItemIds": ["gid://shopify/LineItem/1", ...] }
+//     -> 품목(변형)의 Shopify 무게를 kg으로 { [lineItemId]: 0.35 | null } (무게가 없으면 null).
+//        DEC에 빠진 품목을 추가할 때 WGT(KG) 칸에 넣는다. 목록 조회와 따로 둔 이유: 상품 읽기 권한이
+//        없거나 필드가 바뀌어 실패해도 주문 목록은 그대로 보이게(이 조회만 실패 → 무게를 직접 입력).
+//
 //   { "action": "updateAddress", "orderId": "gid://shopify/Order/123",
 //     "address": { "address1": "...", "city": "...", ... } }
 //     -> 배송주소 수정
@@ -41,7 +46,7 @@
 // ------------------------------------------------------------------
 
 // 배포된 버전 확인용 ({ "action": "version" }) — 위 VERSION-MARKER와 같이 올릴 것
-const VERSION = "2026-09-30-staff-only";
+const VERSION = "2026-09-30-line-weights";
 
 const STORE_DOMAIN = Deno.env.get("SHOPIFY_STORE_DOMAIN")!;
 const ACCESS_TOKEN = Deno.env.get("SHOPIFY_ACCESS_TOKEN")!;
@@ -140,6 +145,39 @@ function buildOrdersQuery() {
 `;
 }
 
+// Shopify 무게 단위 → kg
+const WEIGHT_TO_KG: Record<string, number> = { GRAMS: 0.001, KILOGRAMS: 1, OUNCES: 0.028349523125, POUNDS: 0.45359237 };
+
+async function lineItemWeights(lineItemIds: unknown) {
+  const ids = Array.isArray(lineItemIds)
+    ? [...new Set(lineItemIds.filter((id) => typeof id === "string" && id.startsWith("gid://shopify/LineItem/")))]
+    : [];
+  const result: Record<string, number | null> = {};
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    const data = await shopifyGraphQL(
+      `query lineItemWeights($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on LineItem {
+            id
+            variant { inventoryItem { measurement { weight { unit value } } } }
+          }
+        }
+      }`,
+      { ids: chunk },
+    );
+    for (const node of data.nodes ?? []) {
+      if (!node?.id) continue;
+      const w = node.variant?.inventoryItem?.measurement?.weight;
+      const factor = w ? WEIGHT_TO_KG[w.unit] : undefined;
+      const kg = factor !== undefined && Number(w.value) > 0 ? Math.round(Number(w.value) * factor * 1000) / 1000 : null;
+      result[node.id] = kg;
+    }
+    for (const id of chunk) if (!(id in result)) result[id] = null;
+  }
+  return result;
+}
+
 // GraphQL 응답의 order 노드 -> 프론트엔드가 쓰는 평평한 객체로 변환.
 // listOrders/searchOrders 둘 다 이 매핑을 그대로 재사용한다.
 function mapOrderNode(node: any) {
@@ -167,6 +205,8 @@ function mapOrderNode(node: any) {
       return {
         id: e.node.id,
         title: fullTitle,
+        // 옵션 없는 상품명 — DEC에 품목을 추가할 때 ITEM 칸에 넣는다(DEC에는 옵션을 적지 않음)
+        productTitle: baseTitle,
         sku: e.node.sku,
         quantity: e.node.currentQuantity ?? e.node.quantity,
         originalQuantity: e.node.quantity,
@@ -424,6 +464,10 @@ Deno.serve(async (req: Request) => {
 
       case "version":
         result = VERSION;
+        break;
+
+      case "lineItemWeights":
+        result = await lineItemWeights(body.lineItemIds);
         break;
 
       case "search":
