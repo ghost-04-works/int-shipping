@@ -1,5 +1,5 @@
 // Supabase Edge Function: shopify-orders
-// VERSION-MARKER: 2026-09-29-current-quantity
+// VERSION-MARKER: 2026-09-30-staff-only
 // ------------------------------------------------------------------
 // Shopify Admin GraphQL API를 대신 호출해주는 프록시.
 // 브라우저에는 Shopify 액세스 토큰을 절대 노출하지 않고,
@@ -41,7 +41,7 @@
 // ------------------------------------------------------------------
 
 // 배포된 버전 확인용 ({ "action": "version" }) — 위 VERSION-MARKER와 같이 올릴 것
-const VERSION = "2026-09-29-current-quantity";
+const VERSION = "2026-09-30-staff-only";
 
 const STORE_DOMAIN = Deno.env.get("SHOPIFY_STORE_DOMAIN")!;
 const ACCESS_TOKEN = Deno.env.get("SHOPIFY_ACCESS_TOKEN")!;
@@ -378,10 +378,34 @@ async function fulfillOrder(
   return data.fulfillmentCreateV2.fulfillment;
 }
 
+// ── 호출자 확인: 로그인한 @geon.works 사용자만 허용 ──────────────────
+// 페이지와 anon key는 공개돼 있어 누구나 이 함수를 부를 수 있으므로, int-shipping이 보내는 Supabase 로그인 토큰으로
+// 사용자를 확인한다. 같은 프로젝트에 벤더 페이지 사용자도 로그인하므로 "로그인 여부"가 아니라 이메일 도메인을 본다.
+const STAFF_EMAIL_DOMAIN = "geon.works";
+
+async function isStaffRequest(req: Request): Promise<boolean> {
+  const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  if (!token) return false;
+  const resp = await fetch(`${Deno.env.get("SUPABASE_URL")}/auth/v1/user`, {
+    headers: { Authorization: `Bearer ${token}`, apikey: Deno.env.get("SUPABASE_ANON_KEY") ?? "" },
+  });
+  if (!resp.ok) return false; // anon key, 만료·위조 토큰 등
+  const user = await resp.json().catch(() => null);
+  const email = String(user?.email ?? "").toLowerCase();
+  return email.endsWith(`@${STAFF_EMAIL_DOMAIN}`);
+}
+
 // ── HTTP 핸들러 ──────────────────────────────────────────────────
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: CORS_HEADERS });
+  }
+
+  if (!(await isStaffRequest(req))) {
+    return new Response(JSON.stringify({ error: "@geon.works 계정 로그인이 필요합니다. 새로고침 후 다시 로그인해주세요." }), {
+      status: 401,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
   }
 
   try {
