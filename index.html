@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>해외주문 발송 처리</title>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <style>
   :root {
@@ -510,7 +511,8 @@
 
 <script>
 // ── 설정 ──────────────────────────────────────────────────────────
-const SUPABASE_FUNCTIONS_BASE = "https://yqpskohzmnfiymjrgdxj.supabase.co/functions/v1";
+const SUPABASE_URL = "https://yqpskohzmnfiymjrgdxj.supabase.co";
+const SUPABASE_FUNCTIONS_BASE = `${SUPABASE_URL}/functions/v1`;
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlxcHNrb2h6bW5maXltanJnZHhqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MjQwMTgsImV4cCI6MjA5NDAwMDAxOH0.D75U1e8JMvVI0K2Ccq5DwOliPg_rt-2uvKse1V2fiqw";
 const GOOGLE_CLIENT_ID = "666157816733-0uu1dkoda0ljjslrd479j371snkj62t7.apps.googleusercontent.com";
 const ALLOWED_DOMAIN = "geon.works";
@@ -557,18 +559,45 @@ function recordExportHistory(orderNumbers) {
 let selectedDhlOrderIds = new Set();
 
 // ── 인증 ──────────────────────────────────────────────────────────
-function handleCredentialResponse(response) {
+// ── 로그인 ───────────────────────────────────────────────────────
+// Google 로그인 토큰으로 Supabase 세션을 만든다. Edge Function은 이 세션 토큰으로 @geon.works 사용자인지 확인하므로
+// 화면만이 아니라 함수 호출 자체가 보호된다. 세션은 이 브라우저에 저장되고 자동으로 연장된다.
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, storageKey: "int-shipping-auth" },
+});
+let googleNonce = null; // Google 토큰 재사용 방지용 — Google에는 해시를, Supabase에는 원문을 넘긴다
+
+function isStaffEmail(email) {
+  return !!email && email.toLowerCase().endsWith("@" + ALLOWED_DOMAIN);
+}
+
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function handleCredentialResponse(response) {
   const payload = parseJwt(response.credential);
-  if (!payload.email || !payload.email.endsWith("@" + ALLOWED_DOMAIN) || !payload.email_verified) {
+  if (!isStaffEmail(payload.email) || !payload.email_verified) {
     alert("@" + ALLOWED_DOMAIN + " 계정으로만 로그인할 수 있습니다.");
     return;
   }
-  sessionStorage.setItem("user_email", payload.email);
-  showApp(payload.email);
+  const { data, error } = await sb.auth.signInWithIdToken({
+    provider: "google",
+    token: response.credential,
+    nonce: googleNonce,
+  });
+  if (error || !isStaffEmail(data?.user?.email)) {
+    await sb.auth.signOut();
+    alert("로그인 실패: " + (error?.message || "@" + ALLOWED_DOMAIN + " 계정이 아닙니다."));
+    return;
+  }
+  showApp(data.user.email);
 }
 
 function parseJwt(token) {
-  return JSON.parse(atob(token.split(".")[1]));
+  const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+  return JSON.parse(decodeURIComponent(escape(atob(b64))));
 }
 
 function showApp(email) {
@@ -579,21 +608,25 @@ function showApp(email) {
   loadOrders();
 }
 
-document.getElementById("logout-btn").addEventListener("click", () => {
-  sessionStorage.removeItem("user_email");
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  await sb.auth.signOut();
   location.reload();
 });
 
-window.onload = () => {
-  const savedEmail = sessionStorage.getItem("user_email");
-  if (savedEmail) {
-    showApp(savedEmail);
+window.onload = async () => {
+  const { data } = await sb.auth.getSession();
+  const email = data?.session?.user?.email;
+  if (isStaffEmail(email)) {
+    showApp(email);
     return;
   }
+  if (data?.session) await sb.auth.signOut(); // @geon.works가 아닌 세션은 버린다
+  googleNonce = crypto.randomUUID();
   google.accounts.id.initialize({
     client_id: GOOGLE_CLIENT_ID,
     callback: handleCredentialResponse,
     hosted_domain: ALLOWED_DOMAIN,
+    nonce: await sha256Hex(googleNonce),
   });
   google.accounts.id.renderButton(document.getElementById("g_id_signin"), {
     theme: "filled_black",
@@ -603,10 +636,15 @@ window.onload = () => {
 
 // ── Edge Function 호출 ──────────────────────────────────────────
 async function callFunction(name, body) {
+  // 로그인한 사용자의 세션 토큰으로 호출 — 함수가 @geon.works 사용자인지 확인한다(만료 전이면 자동 연장된 토큰)
+  const { data } = await sb.auth.getSession();
+  const accessToken = data?.session?.access_token;
+  if (!accessToken) throw new Error("로그인이 만료되었습니다. 새로고침 후 다시 로그인해주세요.");
   const resp = await fetch(`${SUPABASE_FUNCTIONS_BASE}/${name}`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${accessToken}`,
+      apikey: SUPABASE_ANON_KEY,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),

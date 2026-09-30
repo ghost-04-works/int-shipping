@@ -22,7 +22,7 @@ const SELECTORS = {
   nextPageButton: 'button[title="Go to the next page"]', // 비활성화 시 class에 k-disabled 포함
   loadingIndicator: '[class*="k-loading"], [class*="k-i-loading"]',
   bulkActionsButton: "button.button-bulk-actions", // "1 selected" 옆의 "Actions" 드롭다운 버튼
-  // 주문 상세 화면 (2026-09-29 저장된 HTML 기준: dhl_docs/DHL Express Commerce.html)
+  // 주문 상세 화면 (2026-09-29 DHL 주문 상세 화면 기준)
   itemsGrid: ".ssit-order-detail-grid.order-items",
   itemsGridHeaderCell: "thead th[data-col-index]",
   itemsGridRow: "tbody tr.k-master-row",

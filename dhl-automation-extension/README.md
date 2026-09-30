@@ -146,7 +146,7 @@ DHL(DEC)에도 할인 금액이 들어가긴 하지만 Shopify와 정확히 일�
    저장됐는지 확인(안 됐으면 1회 재시도) → 목록 복귀. 전부 끝나면 기존 라벨 출력 흐름으로 진행.
    품목을 못 찾거나 저장 확인에 실패하면 **라벨을 출력하지 않고 중단**한다.
 
-- 셀렉터(저장된 `dhl_docs/DHL Express Commerce.html` 기준): Items 표 `.ssit-order-detail-grid.order-items`,
+- 셀렉터(2026-09-29 DHL 주문 상세 화면 기준): Items 표 `.ssit-order-detail-grid.order-items`,
   컬럼은 헤더 `th[data-text]`("SKU", "Ship", "Unit Price (USD)")로 찾음(컬럼 순서 변경 대비), 저장 `button.btn-order-save`.
 - **가액만 확인·수정**: int-shipping에서 주문번호를 입력하면 `shopify-orders`의 `search`(`status: "any"`, 취소·발송완료
   주문 포함)로 주문을 불러와 같은 읽기 → 비교 과정을 거친 뒤, `DHL_AUTOMATE`에 `priceOnly: true`로 가액 수정만 하고
