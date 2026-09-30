@@ -591,8 +591,9 @@ async function reconcileItems(current) {
     } else if (op.kind === "qty" || op.kind === "price") {
       const fields = {};
       if (op.kind === "qty") {
+        // "N of M"의 앞뒤가 같아야 한다 — QTY ORDERED와 QTY TO SHIP을 항상 같이 바꾼다
+        fields["qty ordered"] = String(op.line.qty);
         fields["qty to ship"] = String(op.line.qty);
-        if (rows[op.rowIndex].qty !== null && op.line.qty > rows[op.rowIndex].qty) fields["qty ordered"] = String(op.line.qty);
         // 같은 품목의 단가도 바꿔야 하면 창을 한 번만 열어 같이 고친다
         if (Number.isFinite(op.line.unitPrice) && !samePrice(rows[op.rowIndex].unitPrice, op.line.unitPrice)) {
           fields["unit price"] = formatPrice(op.line.unitPrice);
@@ -644,7 +645,9 @@ function planNextItemOp(rows, lines, deletes) {
   for (let k = 0; k < lines.length; k++) {
     const line = lines[k];
     const i = lineRow[k];
-    if (i >= 0 && Number.isFinite(line.qty) && rows[i].shipQty !== null && Number(rows[i].shipQty) !== Number(line.qty)) {
+    const r = i >= 0 ? rows[i] : null;
+    const qtyOff = r && ((r.shipQty !== null && Number(r.shipQty) !== Number(line.qty)) || (r.qty !== null && Number(r.qty) !== Number(line.qty)));
+    if (Number.isFinite(line.qty) && qtyOff) {
       return { kind: "qty", rowIndex: i, line };
     }
   }
@@ -682,6 +685,18 @@ async function editViaItemModal(rowEl, fields, label) {
     setInputValue(input, value);
     await sleep(250);
   }
+  // 값이 실제로 들어갔는지 다시 읽어 확인 — 하나라도 안 들어갔으면 UPDATE ORDER/SAVE 없이 멈춘다
+  await sleep(300);
+  for (const [name, value] of Object.entries(fields)) {
+    const input = Array.from(modal.querySelectorAll(".add-item-input"))
+      .find((el) => el.querySelector(".modal-label")?.textContent?.trim().toLowerCase() === name)
+      ?.querySelector("input");
+    const actual = input?.value?.trim() ?? "";
+    const same = /^-?[\d.]+$/.test(value) && actual !== "" ? Number(actual) === Number(value) : actual === value;
+    if (!same) {
+      throw new Error(`Item details 창의 "${name}" 칸에 값이 들어가지 않았습니다(${label}: "${actual}" / 목표 "${value}"). 저장하지 않고 멈췄습니다.`);
+    }
+  }
 
   const updateBtn = Array.from(modal.querySelectorAll("button")).find(
     (b) => b.textContent?.trim().toLowerCase() === "update order"
@@ -693,7 +708,13 @@ async function editViaItemModal(rowEl, fields, label) {
   await sleep(800);
 }
 
-// "+ ADD ITEM" → 표 맨 아래 빈 줄 → 그 줄의 연필 → Item details 창에 품목명·SKU·수량·단가·무게를 넣는다
+// 새 줄 창에는 기본값(Weight 0.5, Unit Price 1.0, HS Code, COO Korea)이 들어 있어 전부 덮어쓴다.
+// HS Code는 고정값, COO는 목록에서 고르는 칸이 아니라 글자 그대로 입력하는 칸(아래 4가지 표기만 사용).
+const DEC_HS_CODE = "8473309000";
+const DEC_COO_NAMES = { DE: "Germany", CN: "China", US: "United States", KR: "Korea, Republic of (South K)" };
+
+// "+ ADD ITEM" → 표 맨 아래 빈 줄 → 그 줄의 연필 → Item details 창에 품목명·수량·단가·무게·HS Code·원산지를 넣는다
+// (ITEM SKU·BARCODE는 비워 둔다)
 async function addItemRow(line, rowCountBefore, label) {
   const addBtn =
     document.querySelector(SELECTORS.addItemButton) ||
@@ -706,10 +727,19 @@ async function addItemRow(line, rowCountBefore, label) {
   }, 8000);
   if (!grown) throw new Error(`"+ ADD ITEM"을 눌렀는데 새 줄이 생기지 않았습니다(${label}).`);
   const newRow = grown[grown.length - 1];
-  const fields = { "item name": line.name, "qty ordered": String(line.qty), "qty to ship": String(line.qty), "unit price": formatPrice(line.unitPrice), "weight(kg)": String(line.weightKg) };
-  if (line.addSku) fields["item sku"] = line.addSku;
+  const coo = DEC_COO_NAMES[String(line.origin || "").toUpperCase()];
+  if (!coo) throw new Error(`추가할 품목의 원산지가 없습니다(${label}). int-shipping 비교 창에서 원산지를 골라주세요.`);
+  const fields = {
+    "item name": line.name,
+    "weight(kg)": String(line.weightKg),
+    "unit price": formatPrice(line.unitPrice),
+    "qty ordered": String(line.qty),
+    "qty to ship": String(line.qty),
+    "hs code": DEC_HS_CODE,
+    "country of origin (coo)": coo,
+  };
   await editViaItemModal(newRow.rowEl, fields, label);
-  const filled = await waitFor(() => readItemRows(pickItemsGrid()).some((r) => norm(r.name) === norm(line.name) || (line.addSku && norm(r.sku) === norm(line.addSku))), 5000);
+  const filled = await waitFor(() => readItemRows(pickItemsGrid()).some((r) => norm(r.name) === norm(line.name)), 5000);
   if (!filled) throw new Error(`추가한 품목이 표에 보이지 않습니다(${label}).`);
 }
 

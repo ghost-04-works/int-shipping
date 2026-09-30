@@ -267,7 +267,8 @@
     padding: 4px 6px;
   }
   #declared-price-table-body.only-mismatch tr.price-match:not(.qty-mismatch) { display: none; }
-  .origin-table select.item-action, .origin-table select.qty-action { font-size: 11px; }
+  .origin-table select.item-action, .origin-table select.qty-action, .origin-table select.coo-input { font-size: 11px; }
+  .origin-table select.coo-input { margin-top: 4px; }
   .origin-table input.weight-input { width: 64px; text-transform: none; margin-top: 4px; }
 </style>
 </head>
@@ -446,7 +447,7 @@
     <p style="font-size:12px; color:var(--text-dim); margin-top:-8px;">
       DHL 주문에 들어가 있는 품목·수량·단가(USD)를 Shopify와 비교했습니다. 품목마다 할인가·정가·DHL 유지·직접 입력 중 고를 수 있고
       (불일치 품목은 기본 할인가), 최종 단가가 DHL과 다른 품목만 DHL에서 수정됩니다.
-      <b>DHL에 없는 품목</b>은 추가(무게 kg 필수), <b>Shopify에 없는 DHL 품목</b>은 삭제, <b>수량이 다른 품목</b>은 DHL SHIP 수량을 Shopify에 맞춥니다.
+      <b>DHL에 없는 품목</b>은 추가(무게 kg·원산지 필수), <b>Shopify에 없는 DHL 품목</b>은 삭제, <b>수량이 다른 품목</b>은 DHL 수량(N of N 앞뒤 모두)을 Shopify에 맞춥니다.
       한 주문의 수정을 모두 마친 뒤 SAVE는 한 번만 누릅니다.
     </p>
     <div id="declared-price-summary" style="font-size:12px; margin-bottom:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;"></div>
@@ -1439,6 +1440,8 @@ const fmtPrice = (v) => (v === null || v === undefined || v === "" ? "-" : Numbe
 
 let declaredPriceLines = []; // 비교 창의 각 Shopify 라인: { order, idx, li, shopify, dhlRow, rowIndex, status, dhlShip, qtyDiff }
 let declaredExtraRows = []; // Shopify에 없는 DHL 품목: { order, row, rowIndex }
+// DEC에 품목을 추가할 때 COUNTRY OF ORIGIN 칸에 넣는 표기 — 이 4가지만 쓴다(확장 content-orders.js의 DEC_COO_NAMES와 같게)
+const DEC_COO_OPTIONS = { DE: "Germany", CN: "China", US: "United States", KR: "Korea, Republic of (South K)" };
 
 function openDeclaredPriceModal(targets, dhlResults) {
   declaredPriceTargets = targets;
@@ -1482,14 +1485,19 @@ function openDeclaredPriceModal(targets, dhlResults) {
 
       // DHL SHIP 칸("2 of 3"의 앞 숫자)이 실제로 보내는 수량 — 옛 확장(1.3)은 shipQty가 없어 주문 수량(qty)으로 비교
       const dhlShip = dhlRow ? dhlRow.shipQty ?? dhlRow.qty : null;
-      const qtyDiff = dhlRow && dhlShip !== null && dhlShip !== undefined && Number(dhlShip) !== Number(li.quantity);
+      const dhlOrdered = dhlRow ? dhlRow.qty ?? dhlShip : null;
+      // "N of M" 앞(SHIP)이나 뒤(주문 수량) 중 하나라도 Shopify 수량과 다르면 둘 다 맞춘다
+      const qtyDiff =
+        dhlRow &&
+        ((dhlShip !== null && dhlShip !== undefined && Number(dhlShip) !== Number(li.quantity)) ||
+          (dhlOrdered !== null && dhlOrdered !== undefined && Number(dhlOrdered) !== Number(li.quantity)));
       declaredPriceLines[lineNo].dhlShip = dhlShip;
       declaredPriceLines[lineNo].qtyDiff = !!qtyDiff;
       if (qtyDiff) qtyDiffCount++;
       const qtyCell = qtyDiff
-        ? `<span class="price-diff" title="DHL SHIP 수량이 다릅니다">${li.quantity} / DHL ${dhlShip}</span><br>
+        ? `<span class="price-diff" title="DHL 수량(SHIP of 주문 수량)이 다릅니다">${li.quantity} / DHL ${dhlShip} of ${dhlOrdered}</span><br>
            <select class="qty-action" data-line="${lineNo}">
-             <option value="fix" selected>SHIP ${dhlShip}→${li.quantity}</option>
+             <option value="fix" selected>→ ${li.quantity} of ${li.quantity}</option>
              <option value="keep">DHL 유지</option>
            </select>`
         : `${li.quantity}`;
@@ -1529,7 +1537,11 @@ function openDeclaredPriceModal(targets, dhlResults) {
             <option value="add" selected>DHL에 추가</option>
             <option value="skip">추가 안 함</option>
           </select><br>
-          <input type="number" step="0.001" min="0" class="weight-input" data-line="${lineNo}" placeholder="kg" title="무게(kg) — DEC WGT(KG) 칸" /> kg`;
+          <input type="number" step="0.001" min="0" class="weight-input" data-line="${lineNo}" placeholder="kg" title="무게(kg) — DEC WGT(KG) 칸" /> kg<br>
+          <select class="coo-input" data-line="${lineNo}" title="원산지 — DEC COUNTRY OF ORIGIN 칸">
+            <option value="">원산지 선택</option>
+            ${Object.entries(DEC_COO_OPTIONS).map(([code, name]) => `<option value="${code}">${escapeHtml(name)}</option>`).join("")}
+          </select>`;
         finalValue = shopify;
       }
 
@@ -1577,14 +1589,14 @@ function openDeclaredPriceModal(targets, dhlResults) {
   tbody.querySelectorAll(".item-action").forEach((sel) => {
     sel.addEventListener("change", () => {
       const skip = sel.value === "skip";
-      tbody.querySelectorAll(`.price-input[data-line="${sel.dataset.line}"], .weight-input[data-line="${sel.dataset.line}"]`).forEach((el) => {
+      tbody.querySelectorAll(`.price-input[data-line="${sel.dataset.line}"], .weight-input[data-line="${sel.dataset.line}"], .coo-input[data-line="${sel.dataset.line}"]`).forEach((el) => {
         el.disabled = skip;
         if (skip) el.style.borderColor = "";
       });
       updateDeclaredConfirmLabel();
     });
   });
-  tbody.querySelectorAll(".qty-action, .extra-action").forEach((sel) => sel.addEventListener("change", updateDeclaredConfirmLabel));
+  tbody.querySelectorAll(".qty-action, .extra-action, .coo-input").forEach((sel) => sel.addEventListener("change", updateDeclaredConfirmLabel));
   const anySelectable = tbody.querySelector(".price-action") !== null;
 
   const summary = document.getElementById("declared-price-summary");
@@ -1601,7 +1613,7 @@ function openDeclaredPriceModal(targets, dhlResults) {
     ${notFoundOrders.length ? `<span style="color:var(--danger);">DHL에서 못 찾은 주문: ${escapeHtml(notFoundOrders.join(", "))}</span>` : ""}
     ${missingCount ? `<span style="color:var(--danger);">DHL에 없는 품목 ${missingCount}개</span>` : ""}
     ${extraCount ? `<span style="color:var(--danger);">Shopify에 없는 DHL 품목 ${extraCount}개</span>` : ""}
-    ${qtyDiffCount ? `<span style="color:var(--danger);">SHIP 수량 다름 ${qtyDiffCount}개</span>` : ""}
+    ${qtyDiffCount ? `<span style="color:var(--danger);">수량 다름 ${qtyDiffCount}개</span>` : ""}
     <span id="declared-weight-status" style="color:var(--text-dim);"></span>
     ${mismatchCount + qtyDiffCount ? `<label style="font-size:12px;"><input type="checkbox" id="declared-only-mismatch" checked /> 불일치만 보기</label>` : ""}
     ${anySelectable ? `<button type="button" id="declared-all-discount"${hasDiscountField ? "" : " disabled"}>전체 할인가로</button>
@@ -1674,7 +1686,21 @@ async function fillMissingItemWeights() {
   const statusEl = document.getElementById("declared-weight-status");
   const missing = declaredPriceLines.map((line, lineNo) => ({ line, lineNo })).filter(({ line }) => line.status === "missing" && line.li.id);
   if (missing.length === 0) return;
-  statusEl.textContent = "추가할 품목 무게 불러오는 중...";
+  statusEl.textContent = "추가할 품목 무게·원산지 불러오는 중...";
+  // 원산지: 포장대장 원산지 확인과 같은 셀메이트 조회. 실패하거나 4가지가 아니면 비워 두고 직접 고르게 한다.
+  const skus = [...new Set(missing.map(({ line }) => line.li.sku).filter(Boolean))];
+  let originEmpty = 0;
+  try {
+    const lookup = skus.length ? await callFunction("sellmate-stock", { action: "lookupProducts", skus }) : {};
+    for (const { line, lineNo } of missing) {
+      const sel = document.querySelector(`#declared-price-table-body .coo-input[data-line="${lineNo}"]`);
+      const code = String(lookup?.[line.li.sku]?.originCode || "").toUpperCase();
+      if (sel && !sel.value && DEC_COO_OPTIONS[code]) sel.value = code;
+      if (sel && !sel.value) originEmpty++;
+    }
+  } catch (err) {
+    originEmpty = missing.length;
+  }
   try {
     const weights = await callFunction("shopify-orders", { action: "lineItemWeights", lineItemIds: missing.map(({ line }) => line.li.id) });
     let empty = 0;
@@ -1685,11 +1711,14 @@ async function fillMissingItemWeights() {
       if (input.value.trim() === "" && Number(kg) > 0) input.value = String(kg);
       else if (input.value.trim() === "") empty++;
     }
-    statusEl.style.color = empty ? "var(--danger)" : "var(--text-dim)";
-    statusEl.textContent = empty ? `Shopify에 무게가 없는 품목 ${empty}개 — 무게(kg)를 직접 입력해주세요` : "추가할 품목 무게: Shopify 값(kg)";
+    const notes = [];
+    if (empty) notes.push(`Shopify에 무게가 없는 품목 ${empty}개 — 무게(kg)를 직접 입력해주세요`);
+    if (originEmpty) notes.push(`원산지를 못 찾은 품목 ${originEmpty}개 — 원산지를 골라주세요`);
+    statusEl.style.color = notes.length ? "var(--danger)" : "var(--text-dim)";
+    statusEl.textContent = notes.length ? notes.join(" / ") : "추가할 품목 무게(Shopify)·원산지(셀메이트)를 채웠습니다";
   } catch (err) {
     statusEl.style.color = "var(--danger)";
-    statusEl.textContent = `Shopify 무게를 불러오지 못했습니다 — 추가할 품목 무게(kg)를 직접 입력해주세요 (${err.message})`;
+    statusEl.textContent = `Shopify 무게를 불러오지 못했습니다 — 추가할 품목 무게(kg)${originEmpty ? "·원산지" : ""}를 직접 입력해주세요 (${err.message})`;
   }
   updateDeclaredConfirmLabel();
 }
@@ -1734,8 +1763,11 @@ function collectDeclaredChanges() {
     if (tbody.querySelector(`.item-action[data-line="${lineNo}"]`)?.value !== "add") return;
     const weightInput = tbody.querySelector(`.weight-input[data-line="${lineNo}"]`);
     const weightKg = Math.round(parseFloat(weightInput?.value) * 1000) / 1000;
+    const cooSelect = tbody.querySelector(`.coo-input[data-line="${lineNo}"]`);
+    const origin = cooSelect?.value || "";
     if (priceBad) invalid.push(input);
     if (!(weightKg > 0)) invalid.push(weightInput);
+    if (!DEC_COO_OPTIONS[origin]) invalid.push(cooSelect);
     const name = li.productTitle || li.title; // DEC에는 옵션 없이 상품명만
     e.lines.push({
       sku: li.sku || "",
@@ -1743,7 +1775,8 @@ function collectDeclaredChanges() {
       rowIndex: -1,
       unitPrice: priceBad ? null : unitPrice,
       qty: Number(li.quantity),
-      add: { name, unitPrice: priceBad ? null : unitPrice, qty: Number(li.quantity), weightKg, addSku: li.sku || "" },
+      // DEC에 새로 넣는 품목은 ITEM SKU·BARCODE를 비워 둔다 (다시 찾을 때는 품목명으로 찾음)
+      add: { name, unitPrice: priceBad ? null : unitPrice, qty: Number(li.quantity), weightKg, origin },
     });
     counts.addCount++;
     e.changed = true;
@@ -1769,11 +1802,11 @@ document.getElementById("declared-price-cancel").addEventListener("click", () =>
 document.getElementById("declared-price-confirm").addEventListener("click", () => {
   const errorEl = document.getElementById("declared-price-modal-error");
   const { priceUpdates, invalid } = collectDeclaredChanges();
-  document.querySelectorAll("#declared-price-table-body .price-input, #declared-price-table-body .weight-input").forEach((el) => {
+  document.querySelectorAll("#declared-price-table-body .price-input, #declared-price-table-body .weight-input, #declared-price-table-body .coo-input").forEach((el) => {
     el.style.borderColor = invalid.includes(el) ? "var(--danger)" : "";
   });
   if (invalid.length > 0) {
-    errorEl.textContent = "단가 또는 무게(kg)가 비었거나 올바르지 않은 칸이 있습니다(빨간 테두리). 추가하지 않을 품목은 \"추가 안 함\"을 고르세요.";
+    errorEl.textContent = "단가·무게(kg)·원산지가 비었거나 올바르지 않은 칸이 있습니다(빨간 테두리). 추가하지 않을 품목은 \"추가 안 함\"을 고르세요.";
     return;
   }
 
@@ -1803,8 +1836,8 @@ function startDhlAutomation(orderNumbers, priceUpdates) {
 }
 
 // 확장 프로그램 버전 확인 — 가액 확인·수정은 요청 종류가 바뀐 1.2 이상에서만 안전하고, 1.3부터 작업 상태가 유지된다
-// (옛 버전 파일이 섞이면 "가액만 수정"이 라벨 출력으로 처리된 사고가 있었음). 1.4부터 품목 추가·삭제·SHIP 수량과 DEC 계정 확인.
-const MIN_EXTENSION_VERSION = "1.4";
+// (옛 버전 파일이 섞이면 "가액만 수정"이 라벨 출력으로 처리된 사고가 있었음). 1.4부터 품목 추가·삭제·SHIP 수량과 DEC 계정 확인, 1.5부터 QTY ORDERED 같이 수정·추가 품목 HS Code/원산지.
+const MIN_EXTENSION_VERSION = "1.5";
 // 일반(Shopify) 주문 작업을 할 DEC 계정 — DEC 화면 오른쪽 위 계정명. 다르면(B2B 계정 GMI(B2B)_… 등) 확장이 아무것도 하지 않고 멈춘다.
 const DEC_GENERAL_ACCOUNT = "sw0780@naver.com";
 let extensionVersion = null;
