@@ -1454,7 +1454,10 @@ function openDeclaredPriceModal(targets, dhlResults) {
   let extraCount = 0; // DHL엔 있는데 Shopify에 없는 품목
   const mismatchOrders = new Set();
   const notFoundOrders = [];
-  const hasDiscountField = targets.some((o) => o.lineItems.some((li) => li.discountedUnitPrice !== undefined));
+  // 품목이 하나도 없는 주문(취소 등)만 있으면 할인가 필드 유무를 알 수 없다 — 그때는 경고하지 않는다
+  const allLines = targets.flatMap((o) => o.lineItems);
+  const hasDiscountField = allLines.length === 0 || allLines.some((li) => li.discountedUnitPrice !== undefined);
+  let frozenOrders = []; // Shopify 취소·품목 0개 주문 — DHL 품목을 지우거나 고치지 않음
 
   for (const order of targets) {
     const result = dhlResults[order.orderNumber];
@@ -1469,6 +1472,20 @@ function openDeclaredPriceModal(targets, dhlResults) {
     }
 
     const rows = result.rows || [];
+    // Shopify에서 취소됐거나 남은 품목이 0개인 주문: 비교 기준이 없어 DHL 품목이 전부 "Shopify에 없음"이 된다.
+    // 이걸 기본값(삭제)으로 두면 DHL 주문 품목이 모두 지워지므로 이런 주문은 아무것도 고치지 않는다.
+    const frozen = !!order.cancelledAt || order.lineItems.length === 0;
+    if (frozen) frozenOrders.push(order.orderNumber);
+    if (frozen) {
+      rowsHtml.push(`<tr class="order-start price-missing"><td>${escapeHtml(order.orderNumber)}</td>
+        <td colspan="7" style="color:var(--danger);">${order.cancelledAt ? "Shopify에서 취소된 주문" : "Shopify에 남은 품목이 없는 주문"}입니다 — DHL 품목을 수정·삭제하지 않습니다. 보내지 않을 주문이면 DEC에서 직접 정리해주세요.</td></tr>`);
+      for (const r of rows) {
+        rowsHtml.push(`<tr class="price-missing"><td></td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.sku || "")}</td>
+          <td>DHL ${r.shipQty ?? r.qty ?? "-"}</td><td>-</td><td>${fmtPrice(r.unitPrice)}</td>
+          <td colspan="2" style="color:var(--text-dim);">수정 안 함</td></tr>`);
+      }
+      continue;
+    }
     const { lineToRow, extraRows } = matchDhlRows(order, rows);
     order.lineItems.forEach((li, idx) => {
       const shopify = defaultDeclaredUnitPrice(li);
@@ -1601,15 +1618,18 @@ function openDeclaredPriceModal(targets, dhlResults) {
 
   const summary = document.getElementById("declared-price-summary");
   summary.innerHTML = `
-    <span style="color:${mismatchCount || notFoundOrders.length || missingCount || extraCount ? "var(--danger)" : "var(--domestic)"}; font-weight:600;">
+    <span style="color:${mismatchCount || notFoundOrders.length || frozenOrders.length || missingCount || extraCount ? "var(--danger)" : "var(--domestic)"}; font-weight:600;">
       ${mismatchCount
         ? `불일치 ${mismatchCount}개 품목 (${mismatchOrders.size}건 주문)`
         : notFoundOrders.length === targets.length
           ? "DHL에서 주문을 찾지 못해 비교하지 못했습니다"
-          : notFoundOrders.length || missingCount || extraCount
+          : notFoundOrders.length + frozenOrders.length === targets.length
+            ? "비교할 Shopify 품목이 없습니다"
+          : notFoundOrders.length || frozenOrders.length || missingCount || extraCount
             ? "DHL과 짝이 맞는 품목은 모두 Shopify와 일치합니다"
             : "모든 품목이 Shopify와 일치합니다"}
     </span>
+    ${frozenOrders.length ? `<span style="color:var(--danger);">Shopify 취소·품목 없음 주문(수정 안 함): ${escapeHtml(frozenOrders.join(", "))}</span>` : ""}
     ${notFoundOrders.length ? `<span style="color:var(--danger);">DHL에서 못 찾은 주문: ${escapeHtml(notFoundOrders.join(", "))}</span>` : ""}
     ${missingCount ? `<span style="color:var(--danger);">DHL에 없는 품목 ${missingCount}개</span>` : ""}
     ${extraCount ? `<span style="color:var(--danger);">Shopify에 없는 DHL 품목 ${extraCount}개</span>` : ""}
