@@ -3146,6 +3146,9 @@ function vendorOrderFigures(order) {
   return { lines, netShipping, invoiceTotal, declaredItems, declaredTotal: roundCents(declaredItems + netShipping) };
 }
 
+// 벤더 주문 사이트(geon_vsale) 관리자 주문 상세 — 뒤에 orders.id(UUID)를 붙인다
+const VENDOR_ADMIN_ORDER_URL = "https://geon-vsale.vercel.app/admin/orders/";
+
 // DEC CSV Order Number: "B" + 인보이스 번호 숫자 (#ORD-260929001 / GMI260929001 → B260929001)
 function vendorCsvOrderNumber(order) {
   return "B" + String(order.orderNo || "").replace(/[^0-9]/g, "");
@@ -3192,7 +3195,7 @@ function renderVendorOrders() {
       return `
         <tr>
           <td><input type="checkbox" class="vendor-select" data-id="${escapeHtml(o.id)}" ${selectedVendorOrderIds.has(o.id) ? "checked" : ""} /></td>
-          <td><b>${escapeHtml(o.orderNo)}</b><br><span style="font-size:11px; color:var(--text-dim);">${escapeHtml(o.invoiceNo || "인보이스 없음")}</span></td>
+          <td><a href="${VENDOR_ADMIN_ORDER_URL}${encodeURIComponent(o.id)}" target="_blank" rel="noopener" title="벤더 주문 사이트에서 주문 상세 열기 (새 탭)" style="color:inherit;"><b>${escapeHtml(o.orderNo)}</b> ↗</a><br><span style="font-size:11px; color:var(--text-dim);">${escapeHtml(o.invoiceNo || "인보이스 없음")}</span></td>
           <td>${escapeHtml(o.vendorName || "")}</td>
           <td>${escapeHtml(to.company || to.name || "")}<br><span style="font-size:11px; color:var(--text-dim);">${escapeHtml([to.city, to.country_code].filter(Boolean).join(", "))}</span></td>
           <td>${o.items.length}종 / ${o.items.reduce((s, it) => s + it.qty, 0).toLocaleString()}개</td>
